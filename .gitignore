@@ -1,0 +1,85 @@
+# ==============================
+# OS / Environment
+# ==============================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+
+# ==============================
+# Visual Studio
+# ==============================
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+
+# ==============================
+# Build Directories
+# ==============================
+[Bb]uild/
+[Bb]in/
+[Oo]bj/
+[xX]64/
+[xX]86/
+[Aa]rm64/
+
+
+# ==============================
+# CMake (if used later)
+# ==============================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+
+# ==============================
+# Compiled Artifacts
+# ==============================
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+
+# ==============================
+# Logs / Dumps
+# ==============================
+*.log
+*.dmp
+
+
+# ==============================
+# Package / Temp
+# ==============================
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+
+# ==============================
+# Editor / Tool Cache
+# ==============================
+.vscode/
+.idea/
+
+
+# ==============================
+# AXIS-specific rules
+# ==============================
+# Local-only experiment branches should not commit generated outputs
+axis_cache/
+axis_temp/
+
+
+# Do not ignore source, headers, or CMakeLists.txt
+!*.cpp
+!*.h
+!*.hpp
+!CMakeLists.txt
