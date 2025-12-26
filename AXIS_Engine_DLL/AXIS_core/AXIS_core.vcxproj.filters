@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="소스 파일">
@@ -13,6 +13,21 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="헤더 파일\Public API">
+      <UniqueIdentifier>{8A1B2C3D-4E5F-6A7B-8C9D-0E1F2A3B4C5D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Public API\Core">
+      <UniqueIdentifier>{1A2B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Memory">
+      <UniqueIdentifier>{2B3C4D5E-6F7A-8B9C-0D1E-2F3A4B5C6D7E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Memory">
+      <UniqueIdentifier>{3C4D5E6F-7A8B-9C0D-1E2F-3A4B5C6D7E8F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Tests">
+      <UniqueIdentifier>{4D5E6F7A-8B9C-0D1E-2F3A-4B5C6D7E8F9A}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h">
@@ -21,6 +36,24 @@
     <ClInclude Include="pch.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="include\axis\core\axis_core_types.h">
+      <Filter>헤더 파일\Public API\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="include\axis\core\axis_memory.h">
+      <Filter>헤더 파일\Public API\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory\memory_internal.h">
+      <Filter>헤더 파일\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory\general_allocator.h">
+      <Filter>헤더 파일\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory\pool_allocator.h">
+      <Filter>헤더 파일\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory\frame_allocator.h">
+      <Filter>헤더 파일\Memory</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -28,6 +61,24 @@
     </ClCompile>
     <ClCompile Include="pch.cpp">
       <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory\memory_internal.cpp">
+      <Filter>소스 파일\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory\general_allocator.cpp">
+      <Filter>소스 파일\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory\pool_allocator.cpp">
+      <Filter>소스 파일\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory\frame_allocator.cpp">
+      <Filter>소스 파일\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory\axis_memory.cpp">
+      <Filter>소스 파일\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\memory_test.cpp">
+      <Filter>Tests</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
