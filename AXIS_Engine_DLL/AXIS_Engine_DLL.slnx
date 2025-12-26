@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="AXIS_core/AXIS_core.vcxproj" />
+  <Project Path="AXIS_core/AXIS_core.vcxproj" Id="d2882197-3a31-44a3-8527-7cfb3da71093" />
 </Solution>
