@@ -21,7 +21,7 @@ PoolAllocator::PoolAllocator(const char* name, size_t object_size, size_t object
     , free_count_(0) {
 
     // Ensure chunk size is at least sizeof(FreeNode) and properly aligned
-    chunk_size_ = std::max(object_size, sizeof(FreeNode));
+    chunk_size_ = (std::max)(object_size, sizeof(FreeNode));
     chunk_size_ = AlignUp(chunk_size_, DEFAULT_ALIGNMENT);
 
     // Allocate the entire pool
