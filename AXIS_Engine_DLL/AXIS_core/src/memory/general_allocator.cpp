@@ -5,8 +5,8 @@
 
 #include "pch.h"
 #include "general_allocator.h"
+#include "axis/core/axis_assert.h"
 #include <cstdlib>
-#include <cassert>
 
 namespace axis::core::memory {
 
@@ -98,7 +98,7 @@ void GeneralAllocator::Free(void* ptr) {
         auto it = allocations_.find(ptr);
         if (it == allocations_.end()) {
             // Invalid pointer - not allocated by this allocator
-            assert(false && "Attempt to free invalid pointer");
+            AXIS_ASSERT_MSG(false, "Attempt to free invalid pointer");
             return;
         }
 

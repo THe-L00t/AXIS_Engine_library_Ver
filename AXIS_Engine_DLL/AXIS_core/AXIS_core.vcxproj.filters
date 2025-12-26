@@ -25,6 +25,9 @@
     <Filter Include="소스 파일\Memory">
       <UniqueIdentifier>{3C4D5E6F-7A8B-9C0D-1E2F-3A4B5C6D7E8F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\Assert">
+      <UniqueIdentifier>{5E6F7A8B-9C0D-1E2F-3A4B-5C6D7E8F9A0B}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Tests">
       <UniqueIdentifier>{4D5E6F7A-8B9C-0D1E-2F3A-4B5C6D7E8F9A}</UniqueIdentifier>
     </Filter>
@@ -35,6 +38,9 @@
     </ClInclude>
     <ClInclude Include="pch.h">
       <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="include\axis\core\axis_assert.h">
+      <Filter>헤더 파일\Public API\Core</Filter>
     </ClInclude>
     <ClInclude Include="include\axis\core\axis_core_types.h">
       <Filter>헤더 파일\Public API\Core</Filter>
@@ -61,6 +67,9 @@
     </ClCompile>
     <ClCompile Include="pch.cpp">
       <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="src\assert\axis_assert.cpp">
+      <Filter>소스 파일\Assert</Filter>
     </ClCompile>
     <ClCompile Include="src\memory\memory_internal.cpp">
       <Filter>소스 파일\Memory</Filter>
