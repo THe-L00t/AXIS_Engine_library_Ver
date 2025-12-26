@@ -28,6 +28,12 @@
     <Filter Include="소스 파일\Assert">
       <UniqueIdentifier>{5E6F7A8B-9C0D-1E2F-3A4B-5C6D7E8F9A0B}</UniqueIdentifier>
     </Filter>
+    <Filter Include="헤더 파일\Time">
+      <UniqueIdentifier>{6F7A8B9C-0D1E-2F3A-4B5C-6D7E8F9A0B1C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Time">
+      <UniqueIdentifier>{7A8B9C0D-1E2F-3A4B-5C6D-7E8F9A0B1C2D}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Tests">
       <UniqueIdentifier>{4D5E6F7A-8B9C-0D1E-2F3A-4B5C6D7E8F9A}</UniqueIdentifier>
     </Filter>
@@ -48,6 +54,9 @@
     <ClInclude Include="include\axis\core\axis_memory.h">
       <Filter>헤더 파일\Public API\Core</Filter>
     </ClInclude>
+    <ClInclude Include="include\axis\core\axis_time.h">
+      <Filter>헤더 파일\Public API\Core</Filter>
+    </ClInclude>
     <ClInclude Include="src\memory\memory_internal.h">
       <Filter>헤더 파일\Memory</Filter>
     </ClInclude>
@@ -59,6 +68,9 @@
     </ClInclude>
     <ClInclude Include="src\memory\frame_allocator.h">
       <Filter>헤더 파일\Memory</Filter>
+    </ClInclude>
+    <ClInclude Include="src\time\time_internal.h">
+      <Filter>헤더 파일\Time</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -85,6 +97,9 @@
     </ClCompile>
     <ClCompile Include="src\memory\axis_memory.cpp">
       <Filter>소스 파일\Memory</Filter>
+    </ClCompile>
+    <ClCompile Include="src\time\axis_time.cpp">
+      <Filter>소스 파일\Time</Filter>
     </ClCompile>
     <ClCompile Include="tests\memory_test.cpp">
       <Filter>Tests</Filter>
