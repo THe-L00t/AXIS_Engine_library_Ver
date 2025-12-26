@@ -141,7 +141,7 @@ namespace {
     uint64_t MockGetTicks(void*) { return g_mock_ticks; }
 }
 
-void ScenarioB_Determinism() {
+void ScenarioB_Determinism() { 
     PrintSeparator("Scenario B: 결정성 (Determinism)");
     std::cout << "검증: 동일한 입력 → 동일한 출력이 보장되는가?\n\n";
 
