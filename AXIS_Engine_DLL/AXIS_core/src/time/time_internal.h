@@ -7,24 +7,25 @@
 #define AXIS_TIME_INTERNAL_H
 
 #include "axis/core/axis_time.h"
-#include <mutex>
-#include <atomic>
 
 namespace axis::core::time {
 
 /**
  * @brief Internal time system state
  *
- * Thread-safety strategy:
- * - Initialization/Shutdown: mutex-protected
- * - Update: single-threaded (called from main loop)
- * - Read (GetTimeState): atomic reads of individual fields
+ * Thread-safety contract (Core philosophy):
+ * - Axis_InitializeTime: Call ONCE from main thread before any other calls
+ * - Axis_ShutdownTime: Call ONCE from main thread after all other calls
+ * - Axis_UpdateTime: Call from SINGLE THREAD (game loop thread)
+ * - Axis_Time_Get*: Reading during Update has undefined behavior
+ *
+ * NO mutex, NO atomic, NO thread-safety guarantees.
+ * Core defines the law of time, not the concurrency model.
  */
 struct TimeSystemState {
     // Initialization state
     bool initialized = false;
     bool has_custom_source = false;
-    std::mutex mutex;  // For init/shutdown only
 
     // Time source
     AxisTimeSource time_source = {};
@@ -35,12 +36,12 @@ struct TimeSystemState {
     uint64_t current_ticks = 0;
 
     // Logical time (microseconds)
-    std::atomic<AxisTimeMicroseconds> total_elapsed_us{0};
-    std::atomic<AxisTimeMicroseconds> frame_delta_us{0};
+    AxisTimeMicroseconds total_elapsed_us = 0;
+    AxisTimeMicroseconds frame_delta_us = 0;
     AxisTimeMicroseconds fixed_delta_us = 0;  // Constant after init
 
     // Frame count
-    std::atomic<uint64_t> frame_count{0};
+    uint64_t frame_count = 0;
 };
 
 /**

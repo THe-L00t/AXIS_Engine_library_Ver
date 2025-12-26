@@ -11,6 +11,7 @@
  * - A scheduler
  * - A game loop
  * - A frame limiter
+ * - A concurrency manager
  *
  * This IS:
  * - The single source of truth for "what time is it now?"
@@ -21,6 +22,14 @@
  * - TIME: Frame-to-frame progression is explicit (manual Update call)
  * - SPACE: Time units are explicit (microseconds), overflow controlled (uint64_t)
  * - DATA: Time source is transparent (platform injection), logic vs platform separated
+ *
+ * THREAD-SAFETY CONTRACT:
+ * - Core Time assumes SINGLE-THREADED update
+ * - Axis_InitializeTime: Call ONCE from main thread
+ * - Axis_UpdateTime: Call from SINGLE THREAD (game loop)
+ * - Axis_Time_Get*: Undefined behavior if called during Update
+ * - NO mutex, NO atomic, NO thread-safety guarantees
+ * - Core defines the LAW, not the concurrency model
  */
 
 #ifndef AXIS_CORE_TIME_H
@@ -100,37 +109,6 @@ typedef struct AxisTimeConfig {
     AxisTimeMicroseconds fixed_delta_us;
 } AxisTimeConfig;
 
-/**
- * @brief Time system state (read-only snapshot)
- */
-typedef struct AxisTimeState {
-    /**
-     * @brief Total elapsed time since initialization (microseconds)
-     */
-    AxisTimeMicroseconds total_elapsed_us;
-
-    /**
-     * @brief Delta time of last frame (microseconds)
-     *
-     * This is the "dt" used for animation, movement, etc.
-     * If fixed_delta_us is set, this equals fixed_delta_us.
-     * Otherwise, this is the actual elapsed time since last Update.
-     */
-    AxisTimeMicroseconds frame_delta_us;
-
-    /**
-     * @brief Fixed delta time setting (microseconds)
-     *
-     * 0 if variable delta, > 0 if fixed delta.
-     */
-    AxisTimeMicroseconds fixed_delta_us;
-
-    /**
-     * @brief Total number of frames (Update calls) since initialization
-     */
-    uint64_t frame_count;
-} AxisTimeState;
-
 // ============================================================================
 // Core API
 // ============================================================================
@@ -139,7 +117,7 @@ typedef struct AxisTimeState {
  * @brief Initialize the time system
  *
  * Must be called before any other time functions.
- * Thread-safe for initialization only (call once from main thread).
+ * Call ONCE from main thread.
  *
  * @param config Configuration (NULL for default)
  * @return AXIS_OK on success
@@ -152,7 +130,7 @@ AXIS_API AxisResult Axis_InitializeTime(const AxisTimeConfig* config);
  * @brief Shutdown the time system
  *
  * Call when done with time system.
- * Thread-safe for shutdown only (call once from main thread).
+ * Call ONCE from main thread.
  *
  * @return AXIS_OK on success
  *         AXIS_ERROR_NOT_INITIALIZED if not initialized
@@ -162,7 +140,7 @@ AXIS_API AxisResult Axis_ShutdownTime(void);
 /**
  * @brief Update time system (advance to next frame)
  *
- * MUST be called once per frame, typically at the start of the game loop.
+ * MUST be called once per frame from SINGLE THREAD (game loop).
  * This calculates delta time and advances the logical clock.
  *
  * Time does NOT advance automatically - it only advances when you call this.
@@ -173,38 +151,43 @@ AXIS_API AxisResult Axis_ShutdownTime(void);
  */
 AXIS_API AxisResult Axis_UpdateTime(void);
 
-/**
- * @brief Get current time system state
- *
- * Thread-safe for reading (atomic snapshot).
- * Can be called from any thread at any time after initialization.
- *
- * @param out_state Output state structure
- * @return AXIS_OK on success
- *         AXIS_ERROR_INVALID_PARAMETER if out_state is NULL
- *         AXIS_ERROR_NOT_INITIALIZED if not initialized
- */
-AXIS_API AxisResult Axis_GetTimeState(AxisTimeState* out_state);
-
 // ============================================================================
-// Utility Functions
+// Query API (Individual Getters - Core Philosophy)
 // ============================================================================
 
 /**
- * @brief Convert microseconds to seconds
+ * @brief Get total elapsed time since initialization
  *
- * @param us Microseconds
- * @return Seconds (floating-point)
+ * This is the "absolute time" - how long the system has been running.
+ *
+ * @return Total elapsed microseconds, or 0 if not initialized
  */
-AXIS_API double Axis_MicrosecondsToSeconds(AxisTimeMicroseconds us);
+AXIS_API AxisTimeMicroseconds Axis_Time_GetTotalElapsed(void);
 
 /**
- * @brief Convert seconds to microseconds
+ * @brief Get delta time of last frame
  *
- * @param seconds Seconds (floating-point)
- * @return Microseconds (truncated to integer)
+ * This is the "dt" used for animation, movement, etc.
+ * If fixed_delta_us is set, this equals fixed_delta_us.
+ * Otherwise, this is the actual elapsed time since last Update.
+ *
+ * @return Frame delta microseconds, or 0 if not initialized or before first Update
  */
-AXIS_API AxisTimeMicroseconds Axis_SecondsToMicroseconds(double seconds);
+AXIS_API AxisTimeMicroseconds Axis_Time_GetFrameDelta(void);
+
+/**
+ * @brief Get fixed delta time setting
+ *
+ * @return Fixed delta microseconds (0 if variable delta), or 0 if not initialized
+ */
+AXIS_API AxisTimeMicroseconds Axis_Time_GetFixedDelta(void);
+
+/**
+ * @brief Get total number of frames (Update calls)
+ *
+ * @return Frame count since initialization, or 0 if not initialized
+ */
+AXIS_API uint64_t Axis_Time_GetFrameCount(void);
 
 #ifdef __cplusplus
 }
