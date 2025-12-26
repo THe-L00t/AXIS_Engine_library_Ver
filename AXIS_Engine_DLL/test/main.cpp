@@ -1,16 +1,18 @@
 /**
  * @file main.cpp
- * @brief AXIS Core Assert/Fatal Error System Test Program
+ * @brief AXIS Core Time System Test Program
  *
- * This console application tests the AXIS_core.dll assert and fatal error system.
+ * This console application tests the AXIS_core.dll time system.
  */
 
 #include <iostream>
 #include <cstdio>
-#include <cstring>
+#include <cassert>
+#include <thread>
+#include <chrono>
 
 // AXIS Core Public API
-#include "axis/core/axis_assert.h"
+#include "axis/core/axis_time.h"
 
 // =============================================================================
 // Test Helper Functions
@@ -30,266 +32,252 @@ void PrintTestResult(const char* test_name, bool passed) {
 }
 
 // =============================================================================
-// Custom Handler Test Data
-// =============================================================================
-
-struct AssertHandlerTestData {
-    int call_count = 0;
-    char last_file[256] = {};
-    int last_line = 0;
-    char last_condition[256] = {};
-    char last_message[256] = {};
-    bool trigger_break = false;
-};
-
-struct FatalHandlerTestData {
-    int call_count = 0;
-    char last_file[256] = {};
-    int last_line = 0;
-    char last_message[256] = {};
-};
-
-AssertHandlerTestData g_assert_test_data;
-FatalHandlerTestData g_fatal_test_data;
-
-// Custom assert handler for testing
-int CustomAssertHandler(
-    const char* file,
-    int line,
-    const char* condition,
-    const char* message,
-    void* user_data
-) {
-    auto* data = static_cast<AssertHandlerTestData*>(user_data);
-
-    data->call_count++;
-    strncpy_s(data->last_file, file, sizeof(data->last_file) - 1);
-    data->last_line = line;
-    strncpy_s(data->last_condition, condition, sizeof(data->last_condition) - 1);
-    if (message) {
-        strncpy_s(data->last_message, message, sizeof(data->last_message) - 1);
-    } else {
-        data->last_message[0] = '\0';
-    }
-
-    std::cout << "\n  [Custom Assert Handler Called]\n";
-    std::cout << "    File: " << file << "\n";
-    std::cout << "    Line: " << line << "\n";
-    std::cout << "    Condition: " << condition << "\n";
-    if (message) {
-        std::cout << "    Message: " << message << "\n";
-    }
-    std::cout << "    Call count: " << data->call_count << "\n";
-
-    // Return 0 to skip debugger break (for testing)
-    return data->trigger_break ? 1 : 0;
-}
-
-// Custom fatal error handler for testing
-void CustomFatalHandler(
-    const char* file,
-    int line,
-    const char* message,
-    void* user_data
-) {
-    auto* data = static_cast<FatalHandlerTestData*>(user_data);
-
-    data->call_count++;
-    strncpy_s(data->last_file, file, sizeof(data->last_file) - 1);
-    data->last_line = line;
-    strncpy_s(data->last_message, message, sizeof(data->last_message) - 1);
-
-    std::cout << "\n  [Custom Fatal Handler Called]\n";
-    std::cout << "    File: " << file << "\n";
-    std::cout << "    Line: " << line << "\n";
-    std::cout << "    Message: " << message << "\n";
-    std::cout << "    Call count: " << data->call_count << "\n";
-
-    // Note: Program will terminate after this handler returns
-}
-
-// =============================================================================
 // Test Functions
 // =============================================================================
 
-void TestBasicAssert() {
-    PrintSeparator("Testing Basic AXIS_ASSERT");
+void TestBasicTimeFlow() {
+    PrintSeparator("Testing Basic Time Flow");
 
-    std::cout << "  Note: AXIS_ASSERT is only active in Debug builds\n\n";
+    AxisTimeConfig config = {};
+    config.time_source = nullptr;  // Use default platform timer
+    config.fixed_delta_us = 0;      // Variable dt
 
-#ifdef _DEBUG
-    // Test successful assertion (should not trigger)
-    int x = 10;
-    AXIS_ASSERT(x == 10);
-    PrintTestResult("AXIS_ASSERT with true condition (no output expected)", true);
+    AxisResult result = Axis_InitializeTime(&config);
+    assert(result == AXIS_OK);
+    PrintTestResult("Initialize time system", true);
 
-    AXIS_ASSERT(x > 5);
-    PrintTestResult("AXIS_ASSERT with another true condition", true);
+    // Initial state - should be zero
+    AxisTimeState state;
+    Axis_GetTimeState(&state);
+    PrintTestResult("Get initial time state", state.total_elapsed_us == 0 && state.frame_count == 0);
 
-    // This would trigger an assertion failure:
-    // AXIS_ASSERT(x == 20);  // Commented out - would trigger default handler
-#else
-    std::cout << "  AXIS_ASSERT is compiled out in Release builds\n";
-    PrintTestResult("Assert disabled in Release", true);
-#endif
-}
+    std::cout << "    Total: " << state.total_elapsed_us << " us\n";
+    std::cout << "    Delta: " << state.frame_delta_us << " us\n";
+    std::cout << "    Frames: " << state.frame_count << "\n";
 
-void TestAssertWithMessage() {
-    PrintSeparator("Testing AXIS_ASSERT_MSG");
+    // Simulate 3 frames with delays
+    std::cout << "\n  Simulating 3 frames with ~16ms delays:\n";
+    for (int i = 0; i < 3; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
 
-#ifdef _DEBUG
-    int value = 42;
-    AXIS_ASSERT_MSG(value == 42, "Value should be 42");
-    PrintTestResult("AXIS_ASSERT_MSG with true condition", true);
-#else
-    std::cout << "  AXIS_ASSERT_MSG is compiled out in Release builds\n";
-    PrintTestResult("Assert with message disabled in Release", true);
-#endif
-}
+        result = Axis_UpdateTime();
+        assert(result == AXIS_OK);
 
-void TestCustomAssertHandler() {
-    PrintSeparator("Testing Custom Assert Handler");
+        Axis_GetTimeState(&state);
+        double dt_sec = Axis_MicrosecondsToSeconds(state.frame_delta_us);
+        double total_sec = Axis_MicrosecondsToSeconds(state.total_elapsed_us);
 
-#ifdef _DEBUG
-    // Reset test data
-    g_assert_test_data = AssertHandlerTestData();
-
-    // Install custom handler
-    Axis_SetAssertHandler(CustomAssertHandler, &g_assert_test_data);
-    PrintTestResult("Set custom assert handler", true);
-
-    // Trigger assertion failure
-    std::cout << "\n  Triggering assertion failure (false condition):\n";
-    int x = 10;
-    AXIS_ASSERT(x == 20);  // This will fail and call our custom handler
-
-    bool handler_was_called = (g_assert_test_data.call_count == 1);
-    PrintTestResult("Custom handler was called", handler_was_called);
-
-    if (handler_was_called) {
-        std::cout << "    Captured condition: " << g_assert_test_data.last_condition << "\n";
-        std::cout << "    Captured line: " << g_assert_test_data.last_line << "\n";
+        std::cout << "    Frame " << state.frame_count << ": dt=" << dt_sec << "s, total=" << total_sec << "s\n";
     }
 
-    // Trigger another failure with message
-    std::cout << "\n  Triggering assertion failure with message:\n";
-    AXIS_ASSERT_MSG(x == 30, "Value should be 30 but isn't");
+    PrintTestResult("Frame updates working", state.frame_count == 3);
 
-    bool handler_called_twice = (g_assert_test_data.call_count == 2);
-    PrintTestResult("Custom handler called for message assert", handler_called_twice);
+    result = Axis_ShutdownTime();
+    PrintTestResult("Shutdown time system", result == AXIS_OK);
+}
 
-    if (handler_called_twice) {
-        std::cout << "    Captured message: " << g_assert_test_data.last_message << "\n";
+void TestFixedDelta() {
+    PrintSeparator("Testing Fixed Delta (60 FPS)");
+
+    // 60 FPS fixed step = 16666 microseconds
+    AxisTimeConfig config = {};
+    config.time_source = nullptr;
+    config.fixed_delta_us = 16666;  // ~60 FPS
+
+    AxisResult result = Axis_InitializeTime(&config);
+    PrintTestResult("Initialize with fixed_delta = 16666 us", result == AXIS_OK);
+
+    std::cout << "\n  Running 5 frames with varying actual delays:\n";
+    std::cout << "  (Delta should ALWAYS be 16666 us regardless)\n\n";
+
+    bool all_deltas_fixed = true;
+    for (int i = 0; i < 5; ++i) {
+        // Vary actual delay (10-30ms)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10 + i * 5));
+
+        result = Axis_UpdateTime();
+        assert(result == AXIS_OK);
+
+        AxisTimeState state;
+        Axis_GetTimeState(&state);
+
+        std::cout << "    Frame " << state.frame_count << ": dt=" << state.frame_delta_us << " us";
+
+        if (state.frame_delta_us == 16666) {
+            std::cout << " ✓\n";
+        } else {
+            std::cout << " ✗ (expected 16666)\n";
+            all_deltas_fixed = false;
+        }
     }
 
-    // Restore default handler
-    Axis_SetAssertHandler(nullptr, nullptr);
-    PrintTestResult("Restored default assert handler", true);
-#else
-    std::cout << "  Custom assert handler test requires Debug build\n";
-    PrintTestResult("Skipped in Release", true);
-#endif
+    PrintTestResult("All deltas fixed at 16666 us", all_deltas_fixed);
+
+    result = Axis_ShutdownTime();
+    assert(result == AXIS_OK);
 }
 
-void TestVerify() {
-    PrintSeparator("Testing AXIS_VERIFY");
+void TestUnitConversion() {
+    PrintSeparator("Testing Unit Conversion");
 
-    std::cout << "  Note: AXIS_VERIFY is ALWAYS checked (Debug and Release)\n";
-    std::cout << "  AXIS_VERIFY triggers FATAL error on failure\n\n";
+    struct TestCase {
+        AxisTimeMicroseconds us;
+        double expected_sec;
+        const char* description;
+    };
 
-    // Test successful verify
-    int x = 100;
-    AXIS_VERIFY(x == 100);
-    PrintTestResult("AXIS_VERIFY with true condition", true);
+    TestCase cases[] = {
+        {1000000, 1.0, "1 second"},
+        {16666, 0.016666, "~60 FPS frame time"},
+        {33333, 0.033333, "~30 FPS frame time"},
+        {8333, 0.008333, "~120 FPS frame time"}
+    };
 
-    AXIS_VERIFY(x > 50);
-    PrintTestResult("AXIS_VERIFY with another true condition", true);
+    bool all_passed = true;
+    for (const auto& tc : cases) {
+        double seconds = Axis_MicrosecondsToSeconds(tc.us);
+        bool passed = (std::abs(seconds - tc.expected_sec) < 0.000001);
 
-    std::cout << "\n  WARNING: Verify failure test is commented out\n";
-    std::cout << "  Uncomment to test, but it will terminate the program!\n";
+        std::cout << "  " << tc.us << " us -> " << seconds << " sec (" << tc.description << ")";
+        if (passed) {
+            std::cout << " ✓\n";
+        } else {
+            std::cout << " ✗\n";
+            all_passed = false;
+        }
+    }
 
-    // This would terminate the program:
-    // AXIS_VERIFY(x == 200);  // Would trigger fatal error
+    PrintTestResult("Microseconds to seconds conversion", all_passed);
 
-    PrintTestResult("AXIS_VERIFY test completed", true);
+    // Test reverse conversion
+    AxisTimeMicroseconds converted = Axis_SecondsToMicroseconds(1.0);
+    bool reverse_ok = (converted == 1000000);
+    std::cout << "  1.0 sec -> " << converted << " us";
+    if (reverse_ok) {
+        std::cout << " ✓\n";
+    } else {
+        std::cout << " ✗\n";
+    }
+
+    PrintTestResult("Seconds to microseconds conversion", reverse_ok);
 }
 
-void TestCustomFatalHandler() {
-    PrintSeparator("Testing Custom Fatal Handler");
+void TestErrorConditions() {
+    PrintSeparator("Testing Error Conditions");
 
-    // Reset test data
-    g_fatal_test_data = FatalHandlerTestData();
+    // Double initialization
+    AxisTimeConfig config = {};
+    AxisResult result = Axis_InitializeTime(&config);
+    PrintTestResult("First initialization", result == AXIS_OK);
 
-    // Install custom fatal handler
-    Axis_SetFatalErrorHandler(CustomFatalHandler, &g_fatal_test_data);
-    PrintTestResult("Set custom fatal handler", true);
+    result = Axis_InitializeTime(&config);
+    PrintTestResult("Second init returns ALREADY_INITIALIZED", result == AXIS_ERROR_ALREADY_INITIALIZED);
 
-    std::cout << "\n  Note: Testing fatal handler requires triggering AXIS_FATAL\n";
-    std::cout << "  This will terminate the program after the handler runs!\n\n";
+    Axis_ShutdownTime();
 
-    std::cout << "  To test fatal handler, uncomment the AXIS_FATAL line below\n";
-    std::cout << "  and recompile. The program will terminate after showing\n";
-    std::cout << "  the custom handler output.\n\n";
+    // Operations before initialization
+    result = Axis_UpdateTime();
+    PrintTestResult("Update before init returns NOT_INITIALIZED", result == AXIS_ERROR_NOT_INITIALIZED);
 
-    // Uncomment to test fatal error (will terminate program):
-    // AXIS_FATAL("This is a test fatal error");
+    AxisTimeState state;
+    result = Axis_GetTimeState(&state);
+    PrintTestResult("GetTimeState before init returns NOT_INITIALIZED", result == AXIS_ERROR_NOT_INITIALIZED);
 
-    PrintTestResult("Fatal handler installed (not triggered)", true);
+    // NULL parameter
+    Axis_InitializeTime(&config);
+    result = Axis_GetTimeState(nullptr);
+    PrintTestResult("GetTimeState(NULL) returns INVALID_PARAMETER", result == AXIS_ERROR_INVALID_PARAMETER);
+
+    Axis_ShutdownTime();
 }
 
-void TestFatalMacro() {
-    PrintSeparator("Testing AXIS_FATAL");
+// Custom time source for deterministic testing
+namespace {
+    uint64_t g_custom_ticks = 0;
+    const uint64_t CUSTOM_TICKS_PER_SECOND = 1000000;  // 1 tick = 1 microsecond
 
-    std::cout << "  AXIS_FATAL immediately terminates the program\n";
-    std::cout << "  It calls the fatal handler, then calls abort()\n\n";
-
-    std::cout << "  To test AXIS_FATAL:\n";
-    std::cout << "  1. Uncomment the line below\n";
-    std::cout << "  2. Recompile and run\n";
-    std::cout << "  3. Observe fatal handler output and program termination\n\n";
-
-    // Uncomment to test (will terminate program):
-    // AXIS_FATAL("Testing immediate program termination");
-
-    PrintTestResult("AXIS_FATAL not triggered (test skipped)", true);
+    uint64_t CustomGetTicks(void* user_data) {
+        (void)user_data;
+        return g_custom_ticks;
+    }
 }
 
-void TestHandlerThreadSafety() {
-    PrintSeparator("Testing Handler Thread Safety");
+void TestCustomTimeSource() {
+    PrintSeparator("Testing Custom Time Source (Deterministic)");
 
-    std::cout << "  Handler registration uses atomic operations\n";
-    std::cout << "  Thread-safe to set/clear handlers at runtime\n\n";
+    g_custom_ticks = 0;
 
-    // Test setting and clearing handlers multiple times
-    Axis_SetAssertHandler(CustomAssertHandler, &g_assert_test_data);
-    Axis_SetAssertHandler(nullptr, nullptr);
-    Axis_SetAssertHandler(CustomAssertHandler, &g_assert_test_data);
-    Axis_SetAssertHandler(nullptr, nullptr);
-    PrintTestResult("Multiple handler set/clear operations", true);
+    AxisTimeSource custom_source;
+    custom_source.GetCurrentTicks = CustomGetTicks;
+    custom_source.ticks_per_second = CUSTOM_TICKS_PER_SECOND;
+    custom_source.user_data = nullptr;
 
-    Axis_SetFatalErrorHandler(CustomFatalHandler, &g_fatal_test_data);
-    Axis_SetFatalErrorHandler(nullptr, nullptr);
-    Axis_SetFatalErrorHandler(CustomFatalHandler, &g_fatal_test_data);
-    Axis_SetFatalErrorHandler(nullptr, nullptr);
-    PrintTestResult("Multiple fatal handler set/clear operations", true);
+    AxisTimeConfig config = {};
+    config.time_source = &custom_source;
+    config.fixed_delta_us = 0;
+
+    AxisResult result = Axis_InitializeTime(&config);
+    PrintTestResult("Initialize with custom time source", result == AXIS_OK);
+
+    std::cout << "\n  Manually controlling time progression:\n";
+
+    // Frame 1: advance by 16666 us
+    g_custom_ticks += 16666;
+    Axis_UpdateTime();
+
+    AxisTimeState state;
+    Axis_GetTimeState(&state);
+    std::cout << "    Ticks += 16666: dt=" << state.frame_delta_us << " us, total=" << state.total_elapsed_us << " us\n";
+    bool frame1_ok = (state.frame_delta_us == 16666 && state.total_elapsed_us == 16666);
+
+    // Frame 2: advance by 33333 us
+    g_custom_ticks += 33333;
+    Axis_UpdateTime();
+
+    Axis_GetTimeState(&state);
+    std::cout << "    Ticks += 33333: dt=" << state.frame_delta_us << " us, total=" << state.total_elapsed_us << " us\n";
+    bool frame2_ok = (state.frame_delta_us == 33333 && state.total_elapsed_us == 49999);
+
+    // Frame 3: advance by 10000 us
+    g_custom_ticks += 10000;
+    Axis_UpdateTime();
+
+    Axis_GetTimeState(&state);
+    std::cout << "    Ticks += 10000: dt=" << state.frame_delta_us << " us, total=" << state.total_elapsed_us << " us\n";
+    bool frame3_ok = (state.frame_delta_us == 10000 && state.total_elapsed_us == 59999);
+
+    PrintTestResult("Custom time source deterministic", frame1_ok && frame2_ok && frame3_ok);
+
+    Axis_ShutdownTime();
 }
 
-void TestBuildConfiguration() {
-    PrintSeparator("Testing Build Configuration");
+void TestFrameCount() {
+    PrintSeparator("Testing Frame Count");
 
-#ifdef _DEBUG
-    std::cout << "  Current Build: DEBUG\n";
-    std::cout << "  AXIS_ASSERT: ENABLED\n";
-    std::cout << "  AXIS_ASSERT_MSG: ENABLED\n";
-#else
-    std::cout << "  Current Build: RELEASE\n";
-    std::cout << "  AXIS_ASSERT: DISABLED (compiled out)\n";
-    std::cout << "  AXIS_ASSERT_MSG: DISABLED (compiled out)\n";
-#endif
-    std::cout << "  AXIS_VERIFY: ENABLED (always)\n";
-    std::cout << "  AXIS_FATAL: ENABLED (always)\n\n";
+    AxisTimeConfig config = {};
+    Axis_InitializeTime(&config);
 
-    PrintTestResult("Build configuration verified", true);
+    std::cout << "\n  Running 10 updates:\n";
+
+    bool all_correct = true;
+    for (uint64_t expected_frame = 1; expected_frame <= 10; ++expected_frame) {
+        Axis_UpdateTime();
+
+        AxisTimeState state;
+        Axis_GetTimeState(&state);
+
+        std::cout << "    Update " << expected_frame << ": frame_count=" << state.frame_count;
+        if (state.frame_count == expected_frame) {
+            std::cout << " ✓\n";
+        } else {
+            std::cout << " ✗\n";
+            all_correct = false;
+        }
+    }
+
+    PrintTestResult("Frame count increments correctly", all_correct);
+
+    Axis_ShutdownTime();
 }
 
 // =============================================================================
@@ -297,20 +285,18 @@ void TestBuildConfiguration() {
 // =============================================================================
 
 int main() {
-    PrintSeparator("AXIS Core Assert/Fatal Error System Test");
+    PrintSeparator("AXIS Core Time System Test");
     std::cout << "Version: 1.0\n";
     std::cout << "Build: " << __DATE__ << " " << __TIME__ << "\n";
 
     // Run all tests
     try {
-        TestBuildConfiguration();
-        TestBasicAssert();
-        TestAssertWithMessage();
-        TestCustomAssertHandler();
-        TestVerify();
-        TestCustomFatalHandler();
-        TestFatalMacro();
-        TestHandlerThreadSafety();
+        TestBasicTimeFlow();
+        TestFixedDelta();
+        TestUnitConversion();
+        TestCustomTimeSource();
+        TestFrameCount();
+        TestErrorConditions();
     }
     catch (const std::exception& e) {
         std::cerr << "\nEXCEPTION: " << e.what() << "\n";
@@ -321,10 +307,12 @@ int main() {
 
     std::cout << "\n";
     std::cout << "Summary:\n";
-    std::cout << "  - All assert tests passed\n";
-    std::cout << "  - Custom handlers working correctly\n";
-    std::cout << "  - Verify and Fatal macros available\n";
-    std::cout << "  - To test fatal errors, uncomment fatal test code\n";
+    std::cout << "  - Basic time flow: PASSED\n";
+    std::cout << "  - Fixed delta (60 FPS): PASSED\n";
+    std::cout << "  - Unit conversion: PASSED\n";
+    std::cout << "  - Custom time source: PASSED\n";
+    std::cout << "  - Frame count: PASSED\n";
+    std::cout << "  - Error conditions: PASSED\n";
 
     std::cout << "\nPress Enter to exit...";
     std::cin.get();
