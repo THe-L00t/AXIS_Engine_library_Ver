@@ -5,8 +5,8 @@
 
 #include "pch.h"
 #include "pool_allocator.h"
+#include "axis/core/axis_assert.h"
 #include <cstdlib>
-#include <cassert>
 #include <algorithm>
 
 namespace axis::core::memory {
@@ -93,13 +93,13 @@ void PoolAllocator::Free(void* ptr) {
     uintptr_t ptr_addr = reinterpret_cast<uintptr_t>(ptr);
 
     if (ptr_addr < pool_start || ptr_addr >= pool_end) {
-        assert(false && "Attempt to free pointer not from this pool");
+        AXIS_ASSERT_MSG(false, "Attempt to free pointer not from this pool");
         return;
     }
 
     // Validate alignment
     if ((ptr_addr - pool_start) % chunk_size_ != 0) {
-        assert(false && "Attempt to free misaligned pointer");
+        AXIS_ASSERT_MSG(false, "Attempt to free misaligned pointer");
         return;
     }
 
