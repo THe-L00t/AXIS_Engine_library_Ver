@@ -67,8 +67,8 @@ extern "C" {
 
 AxisResult Axis_InitializeTime(const AxisTimeConfig* config) {
     auto& state = GetTimeState();
-    std::lock_guard<std::mutex> lock(state.mutex);
 
+    // Single-threaded init assumption (no mutex needed)
     if (state.initialized) {
         return AXIS_ERROR_ALREADY_INITIALIZED;
     }
@@ -95,10 +95,10 @@ AxisResult Axis_InitializeTime(const AxisTimeConfig* config) {
     state.last_frame_ticks = state.start_ticks;
     state.current_ticks = state.start_ticks;
 
-    // Reset logical time
-    state.total_elapsed_us.store(0, std::memory_order_release);
-    state.frame_delta_us.store(0, std::memory_order_release);
-    state.frame_count.store(0, std::memory_order_release);
+    // Reset logical time (NO atomic, just direct assignment)
+    state.total_elapsed_us = 0;
+    state.frame_delta_us = 0;
+    state.frame_count = 0;
 
     state.initialized = true;
 
@@ -107,8 +107,8 @@ AxisResult Axis_InitializeTime(const AxisTimeConfig* config) {
 
 AxisResult Axis_ShutdownTime(void) {
     auto& state = GetTimeState();
-    std::lock_guard<std::mutex> lock(state.mutex);
 
+    // Single-threaded shutdown assumption (no mutex needed)
     if (!state.initialized) {
         return AXIS_ERROR_NOT_INITIALIZED;
     }
@@ -121,8 +121,7 @@ AxisResult Axis_ShutdownTime(void) {
 AxisResult Axis_UpdateTime(void) {
     auto& state = GetTimeState();
 
-    // Note: Update is NOT mutex-protected (single-threaded assumption)
-    // Only init/shutdown use mutex
+    // NO lock - single-threaded assumption
     if (!state.initialized) {
         return AXIS_ERROR_NOT_INITIALIZED;
     }
@@ -141,14 +140,10 @@ AxisResult Axis_UpdateTime(void) {
         delta_us = state.fixed_delta_us;
     }
 
-    // Update logical time (atomic for thread-safe reads)
-    AxisTimeMicroseconds new_total = state.total_elapsed_us.load(std::memory_order_acquire) + delta_us;
-    state.total_elapsed_us.store(new_total, std::memory_order_release);
-    state.frame_delta_us.store(delta_us, std::memory_order_release);
-
-    // Increment frame count
-    uint64_t new_frame_count = state.frame_count.load(std::memory_order_acquire) + 1;
-    state.frame_count.store(new_frame_count, std::memory_order_release);
+    // Update logical time (NO atomic, just direct assignment)
+    state.total_elapsed_us += delta_us;
+    state.frame_delta_us = delta_us;
+    state.frame_count++;
 
     // Update last frame ticks for next update
     state.last_frame_ticks = state.current_ticks;
@@ -156,32 +151,48 @@ AxisResult Axis_UpdateTime(void) {
     return AXIS_OK;
 }
 
-AxisResult Axis_GetTimeState(AxisTimeState* out_state) {
-    if (!out_state) {
-        return AXIS_ERROR_INVALID_PARAMETER;
-    }
+// ============================================================================
+// Individual Getter Functions (Core Philosophy)
+// ============================================================================
 
+AxisTimeMicroseconds Axis_Time_GetTotalElapsed(void) {
     auto& state = GetTimeState();
 
     if (!state.initialized) {
-        return AXIS_ERROR_NOT_INITIALIZED;
+        return 0;
     }
 
-    // Atomic snapshot (no mutex needed for reads)
-    out_state->total_elapsed_us = state.total_elapsed_us.load(std::memory_order_acquire);
-    out_state->frame_delta_us = state.frame_delta_us.load(std::memory_order_acquire);
-    out_state->fixed_delta_us = state.fixed_delta_us;  // Constant after init
-    out_state->frame_count = state.frame_count.load(std::memory_order_acquire);
-
-    return AXIS_OK;
+    return state.total_elapsed_us;
 }
 
-double Axis_MicrosecondsToSeconds(AxisTimeMicroseconds us) {
-    return static_cast<double>(us) / 1000000.0;
+AxisTimeMicroseconds Axis_Time_GetFrameDelta(void) {
+    auto& state = GetTimeState();
+
+    if (!state.initialized) {
+        return 0;
+    }
+
+    return state.frame_delta_us;
 }
 
-AxisTimeMicroseconds Axis_SecondsToMicroseconds(double seconds) {
-    return static_cast<AxisTimeMicroseconds>(seconds * 1000000.0);
+AxisTimeMicroseconds Axis_Time_GetFixedDelta(void) {
+    auto& state = GetTimeState();
+
+    if (!state.initialized) {
+        return 0;
+    }
+
+    return state.fixed_delta_us;
+}
+
+uint64_t Axis_Time_GetFrameCount(void) {
+    auto& state = GetTimeState();
+
+    if (!state.initialized) {
+        return 0;
+    }
+
+    return state.frame_count;
 }
 
 } // extern "C"
