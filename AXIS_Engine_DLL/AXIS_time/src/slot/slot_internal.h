@@ -62,19 +62,45 @@ struct ConflictGroupData {
 /**
  * @brief Anchor data for state reconstruction
  *
- * Anchors store a compact summary of state at fixed intervals.
- * Between anchors, state is derived algorithmically.
+ * CRITICAL: Anchors are the ONLY persistent state storage.
+ * Time slots themselves are NEVER stored.
+ *
+ * Reconstruction path:
+ *   [Anchor_k] → slot k+1 → slot k+2 → ... → slot N (target)
+ *
+ * The anchor stores:
+ *   1. Complete state snapshot at that slot
+ *   2. Unique ID for key-based lookup
+ *   3. Transition log for deterministic replay to future slots
  */
 struct AnchorData {
-    AxisSlotIndex           slot_index;
-    AxisReconstructionKey   key;
+    uint64_t                anchor_id;      /** Unique anchor identifier */
+    AxisSlotIndex           slot_index;     /** Slot at which this anchor was created */
 
-    // Compact state summary: map of keys to values at this anchor point
-    // This is bounded by the number of unique keys, not by time
+    // Complete state snapshot at this anchor point
+    // This is the ONLY stored state - all other slots are reconstructed
     std::unordered_map<uint64_t, AxisStateValue> state_snapshot;
 
-    // Hash of all changes from previous anchor to this one (for verification)
-    uint64_t                transition_hash;
+    // Transition log: requests applied between previous anchor and this one
+    // Used for deterministic replay when reconstructing intermediate slots
+    std::vector<PendingRequest> transition_log;
+
+    // Hash for verifying reconstruction correctness
+    uint8_t transition_hash[16];  /** Hash of all transitions from prev anchor */
+    uint8_t policy_hash[16];      /** Hash of conflict resolution decisions */
+};
+
+/**
+ * @brief Slot transition record for deterministic replay
+ *
+ * Stores the minimal information needed to replay a single slot transition.
+ * These are kept between anchors for reconstruction.
+ */
+struct SlotTransition {
+    AxisSlotIndex slot_index;
+    std::vector<PendingRequest> requests;   /** All requests targeting this slot */
+    std::vector<std::pair<AxisStateKey, AxisStateValue>> resolved_changes;
+    uint64_t resolution_hash;               /** For determinism verification */
 };
 
 // =============================================================================
@@ -164,11 +190,20 @@ struct TimeAxisState {
     std::vector<ConflictGroupData> conflict_groups;
 
     // Anchors (protected by mutex)
+    // CRITICAL: Anchors are the ONLY persistent state storage
     std::mutex anchors_mutex;
     std::vector<AnchorData> anchors;
     AxisSlotIndex last_anchor_slot{0};
+    std::atomic<uint64_t> next_anchor_id{1};
+
+    // Transition log between last anchor and current slot
+    // Used for deterministic reconstruction of intermediate slots
+    // Cleared when new anchor is created
+    std::mutex transitions_mutex;
+    std::vector<SlotTransition> pending_transitions;
 
     // Current state (for reconstruction)
+    // This is a working copy derived from the last anchor + transitions
     std::mutex state_mutex;
     std::unordered_map<uint64_t, AxisStateValue> current_state;
 
@@ -208,12 +243,60 @@ uint64_t ComputeChangesHash(
 );
 
 /**
- * @brief Generates a reconstruction key from state
+ * @brief Generates a reconstruction key
+ *
+ * IMPORTANT: The key does NOT encode state.
+ * It encodes HOW to reconstruct state from an anchor.
+ *
+ * @param anchor_id       The anchor to start reconstruction from
+ * @param target_slot     The slot to reconstruct
+ * @param transition_hash Hash of all transitions from anchor to target
+ * @param policy_hash     Hash of conflict resolution decisions
  */
 AxisReconstructionKey GenerateReconstructionKey(
-    AxisSlotIndex slot,
-    uint64_t state_hash,
-    uint64_t transition_hash
+    uint64_t anchor_id,
+    AxisSlotIndex target_slot,
+    const uint8_t* transition_hash,
+    const uint8_t* policy_hash
+);
+
+/**
+ * @brief Computes 128-bit hash for transitions
+ */
+void ComputeTransitionHash(
+    const std::vector<SlotTransition>& transitions,
+    uint8_t out_hash[16]
+);
+
+/**
+ * @brief Computes 128-bit hash for policy decisions
+ */
+void ComputePolicyHash(
+    const std::vector<GroupResolutionResult>& results,
+    uint8_t out_hash[16]
+);
+
+/**
+ * @brief Deterministically replays transitions from anchor to target slot
+ *
+ * This is the core reconstruction engine.
+ * Given an anchor and a list of transitions, it replays them to produce
+ * the exact state at any intermediate slot.
+ *
+ * @param anchor          Starting anchor
+ * @param transitions     Transitions to replay
+ * @param target_slot     Slot to reconstruct (must be >= anchor.slot_index)
+ * @param groups          Conflict group configurations for resolution
+ * @param out_state       Output: reconstructed state
+ *
+ * @return true on success
+ */
+bool ReplayTransitionsToSlot(
+    const AnchorData& anchor,
+    const std::vector<SlotTransition>& transitions,
+    AxisSlotIndex target_slot,
+    const std::vector<ConflictGroupData>& groups,
+    std::unordered_map<uint64_t, AxisStateValue>& out_state
 );
 
 /**

@@ -23,6 +23,7 @@
 #include <queue>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 
 // Public API headers
 #include "include/axis/time/axis_time_slot_types.h"

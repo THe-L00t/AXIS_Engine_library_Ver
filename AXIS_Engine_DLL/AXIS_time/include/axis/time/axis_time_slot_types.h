@@ -68,9 +68,27 @@ typedef uint32_t AxisConflictGroupId;
 /** @brief Request priority for conflict resolution */
 typedef int32_t AxisRequestPriority;
 
-/** @brief Fixed-size reconstruction key (32 bytes) */
+/**
+ * @brief Reconstruction Key - Encodes HOW to reconstruct, NOT the state itself
+ *
+ * CRITICAL PHILOSOPHY:
+ * "A reconstruction key does not encode a state.
+ *  It encodes how to reconstruct a state from an anchor."
+ *
+ * The key alone CANNOT restore state. You need:
+ *   Anchor + Key + Deterministic Transition Engine → State
+ *
+ * This key tells the reconstruction engine:
+ *   1. Which anchor to start from (anchor_id)
+ *   2. Which slot to reach (target_slot)
+ *   3. How to verify the transition path (transition_hash)
+ *   4. How to verify conflict resolution was deterministic (policy_hash)
+ */
 typedef struct AxisReconstructionKey {
-    uint8_t data[32];
+    uint64_t anchor_id;           /** Starting Anchor identifier */
+    uint64_t target_slot;         /** Target slot to reconstruct */
+    uint8_t  transition_hash[16]; /** Hash verifying replay path correctness */
+    uint8_t  policy_hash[16];     /** Hash verifying conflict resolution determinism */
 } AxisReconstructionKey;
 
 /** @brief Request identifier for tracking */

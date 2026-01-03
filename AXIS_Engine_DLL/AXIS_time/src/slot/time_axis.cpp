@@ -83,9 +83,12 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Create(
     }
 
     // Create initial anchor at slot 0
+    // This is the genesis anchor - all reconstruction starts from here or later anchors
     AnchorData initial_anchor{};
+    initial_anchor.anchor_id = state->next_anchor_id.fetch_add(1);
     initial_anchor.slot_index = 0;
-    initial_anchor.transition_hash = 0;
+    std::memset(initial_anchor.transition_hash, 0, 16);
+    std::memset(initial_anchor.policy_hash, 0, 16);
     state->anchors.push_back(std::move(initial_anchor));
 
     state->initialized = true;
@@ -220,29 +223,59 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         }
     }
 
-    // Step 5: Update statistics
+    // Step 5: Record this slot's transition for reconstruction
+    // CRITICAL: This is how we reconstruct past slots without storing them
+    {
+        std::lock_guard<std::mutex> lock(state->transitions_mutex);
+
+        SlotTransition transition;
+        transition.slot_index = target_slot;
+        transition.requests = slot_requests;
+        transition.resolution_hash = combined_hash;
+
+        // Collect all resolved changes
+        for (const auto& result : resolution_results) {
+            for (const auto& change : result.resolved_changes) {
+                transition.resolved_changes.push_back(change);
+            }
+        }
+
+        state->pending_transitions.push_back(std::move(transition));
+    }
+
+    // Step 6: Update statistics
     state->total_requests_processed.fetch_add(slot_requests.size());
     state->total_conflicts_resolved.fetch_add(
         slot_requests.size() > total_changes ? slot_requests.size() - total_changes : 0
     );
 
-    // Step 6: Create anchor if interval reached
+    // Step 7: Create anchor if interval reached
     if (target_slot - state->last_anchor_slot >= state->config.anchor_interval) {
         std::lock_guard<std::mutex> anchors_lock(state->anchors_mutex);
         std::lock_guard<std::mutex> state_lock(state->state_mutex);
+        std::lock_guard<std::mutex> trans_lock(state->transitions_mutex);
 
         AnchorData anchor;
+        anchor.anchor_id = state->next_anchor_id.fetch_add(1);
         anchor.slot_index = target_slot;
         anchor.state_snapshot = state->current_state;
-        anchor.transition_hash = combined_hash;
-        anchor.key = GenerateReconstructionKey(
-            target_slot,
-            ComputeChangesHash({}),  // Simplified
-            combined_hash
-        );
+
+        // Store transition log for reconstruction of slots between anchors
+        for (const auto& trans : state->pending_transitions) {
+            for (const auto& req : trans.requests) {
+                anchor.transition_log.push_back(req);
+            }
+        }
+
+        // Compute hashes for determinism verification
+        ComputeTransitionHash(state->pending_transitions, anchor.transition_hash);
+        ComputePolicyHash(resolution_results, anchor.policy_hash);
 
         state->anchors.push_back(std::move(anchor));
         state->last_anchor_slot = target_slot;
+
+        // Clear pending transitions (now stored in anchor)
+        state->pending_transitions.clear();
 
         // Prune old anchors if needed
         while (state->anchors.size() > state->config.max_anchors) {
@@ -250,10 +283,10 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         }
     }
 
-    // Step 7: Advance current slot
+    // Step 8: Advance current slot
     state->current_slot.store(target_slot);
 
-    // Step 8: Call debug callback if set
+    // Step 9: Call debug callback if set
     {
         std::lock_guard<std::mutex> lock(state->callback_mutex);
         if (state->commit_callback) {

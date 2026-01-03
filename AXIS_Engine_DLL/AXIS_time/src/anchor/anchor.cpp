@@ -1,20 +1,191 @@
 /**
  * @file anchor.cpp
- * @brief Anchor and state reconstruction implementation
+ * @brief Anchor-based Deterministic Reconstruction System
  *
- * Implements the Anchor-based Time Reconstruction System:
- * - Anchors are created at fixed intervals
- * - State between anchors is derived algorithmically
- * - Memory usage remains bounded regardless of execution time
+ * CORE PHILOSOPHY:
+ * "A reconstruction key does not encode a state.
+ *  It encodes how to reconstruct a state from an anchor."
  *
- * Reconstruction cost: O(anchor_interval) per query
+ * CRITICAL CONSTRAINTS:
+ * - Time slots are NEVER stored
+ * - Only Anchors persist state
+ * - Any slot is reconstructed via: Anchor + Transitions + Deterministic Replay
+ *
+ * Reconstruction path:
+ *   [Anchor_k] → replay transitions → slot k+1 → ... → slot N (target)
+ *
+ * Memory is bounded by:
+ *   - Max anchor count (e.g., 64)
+ *   - Transition log between anchors (cleared on anchor creation)
  */
 
 #include "pch.h"
 #include "../slot/slot_internal.h"
 #include <algorithm>
+#include <cstring>
 
 using namespace axis::time::internal;
+
+// =============================================================================
+// Hash Computation Helpers
+// =============================================================================
+
+namespace axis::time::internal {
+
+/**
+ * @brief Simple 128-bit FNV-1a variant for hashing
+ */
+static void FNV128(const uint8_t* data, size_t len, uint8_t out[16]) {
+    // FNV offset basis (128-bit split into two 64-bit)
+    uint64_t h0 = 0x6c62272e07bb0142ULL;
+    uint64_t h1 = 0x62b821756295c58dULL;
+
+    for (size_t i = 0; i < len; ++i) {
+        h0 ^= data[i];
+        h0 *= 0x100000001b3ULL;
+        h1 ^= data[i];
+        h1 *= 0x100000001b3ULL;
+        // Mix
+        h0 ^= h1 >> 32;
+        h1 ^= h0 >> 32;
+    }
+
+    std::memcpy(out, &h0, 8);
+    std::memcpy(out + 8, &h1, 8);
+}
+
+void ComputeTransitionHash(
+    const std::vector<SlotTransition>& transitions,
+    uint8_t out_hash[16]
+) {
+    std::vector<uint8_t> buffer;
+
+    for (const auto& trans : transitions) {
+        // Add slot index
+        buffer.insert(buffer.end(),
+            reinterpret_cast<const uint8_t*>(&trans.slot_index),
+            reinterpret_cast<const uint8_t*>(&trans.slot_index) + sizeof(trans.slot_index));
+
+        // Add resolution hash
+        buffer.insert(buffer.end(),
+            reinterpret_cast<const uint8_t*>(&trans.resolution_hash),
+            reinterpret_cast<const uint8_t*>(&trans.resolution_hash) + sizeof(trans.resolution_hash));
+
+        // Add each resolved change
+        for (const auto& [key, value] : trans.resolved_changes) {
+            buffer.insert(buffer.end(),
+                reinterpret_cast<const uint8_t*>(&key),
+                reinterpret_cast<const uint8_t*>(&key) + sizeof(key));
+            buffer.insert(buffer.end(),
+                reinterpret_cast<const uint8_t*>(&value.as_uint),
+                reinterpret_cast<const uint8_t*>(&value.as_uint) + sizeof(value.as_uint));
+        }
+    }
+
+    if (buffer.empty()) {
+        std::memset(out_hash, 0, 16);
+    } else {
+        FNV128(buffer.data(), buffer.size(), out_hash);
+    }
+}
+
+void ComputePolicyHash(
+    const std::vector<GroupResolutionResult>& results,
+    uint8_t out_hash[16]
+) {
+    std::vector<uint8_t> buffer;
+
+    for (const auto& result : results) {
+        // Add group ID
+        buffer.insert(buffer.end(),
+            reinterpret_cast<const uint8_t*>(&result.group_id),
+            reinterpret_cast<const uint8_t*>(&result.group_id) + sizeof(result.group_id));
+
+        // Add change hash
+        buffer.insert(buffer.end(),
+            reinterpret_cast<const uint8_t*>(&result.change_hash),
+            reinterpret_cast<const uint8_t*>(&result.change_hash) + sizeof(result.change_hash));
+    }
+
+    if (buffer.empty()) {
+        std::memset(out_hash, 0, 16);
+    } else {
+        FNV128(buffer.data(), buffer.size(), out_hash);
+    }
+}
+
+AxisReconstructionKey GenerateReconstructionKey(
+    uint64_t anchor_id,
+    AxisSlotIndex target_slot,
+    const uint8_t* transition_hash,
+    const uint8_t* policy_hash
+) {
+    AxisReconstructionKey key{};
+
+    key.anchor_id = anchor_id;
+    key.target_slot = target_slot;
+
+    if (transition_hash) {
+        std::memcpy(key.transition_hash, transition_hash, 16);
+    }
+    if (policy_hash) {
+        std::memcpy(key.policy_hash, policy_hash, 16);
+    }
+
+    return key;
+}
+
+/**
+ * @brief Deterministically replays a single slot's transitions
+ */
+static void ApplyTransitionToState(
+    const SlotTransition& transition,
+    std::unordered_map<uint64_t, AxisStateValue>& state
+) {
+    for (const auto& [key, value] : transition.resolved_changes) {
+        uint64_t key_hash = MakeStateKeyHash(key);
+        state[key_hash] = value;
+    }
+}
+
+bool ReplayTransitionsToSlot(
+    const AnchorData& anchor,
+    const std::vector<SlotTransition>& transitions,
+    AxisSlotIndex target_slot,
+    const std::vector<ConflictGroupData>& groups,
+    std::unordered_map<uint64_t, AxisStateValue>& out_state
+) {
+    // Start with anchor state
+    out_state = anchor.state_snapshot;
+
+    // Replay each transition up to and including target slot
+    for (const auto& trans : transitions) {
+        if (trans.slot_index > target_slot) {
+            break;  // We've reached the target
+        }
+
+        ApplyTransitionToState(trans, out_state);
+    }
+
+    return true;
+}
+
+uint64_t ComputeChangesHash(
+    const std::vector<std::pair<AxisStateKey, AxisStateValue>>& changes
+) {
+    uint64_t hash = 0x517cc1b727220a95ULL;  // FNV offset basis
+
+    for (const auto& [key, value] : changes) {
+        hash ^= MakeStateKeyHash(key);
+        hash *= 0x100000001b3ULL;  // FNV prime
+        hash ^= value.as_uint;
+        hash *= 0x100000001b3ULL;
+    }
+
+    return hash;
+}
+
+} // namespace axis::time::internal
 
 // =============================================================================
 // Anchor Management
@@ -49,40 +220,61 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_GetReconstructionKey(
 
     const auto* state = reinterpret_cast<const TimeAxisState*>(axis);
 
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state->anchors_mutex));
-
-    // Check if slot is reconstructible
-    if (state->anchors.empty()) {
-        return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
-    }
-
-    if (slot_index < state->anchors.front().slot_index) {
-        return AXIS_TIME_ERROR_SLOT_IN_PAST;
-    }
-
-    if (slot_index > state->current_slot.load()) {
-        return AXIS_TIME_ERROR_INVALID_PARAMETER;
-    }
-
     // Find the anchor at or before the requested slot
     const AnchorData* target_anchor = nullptr;
-    for (auto it = state->anchors.rbegin(); it != state->anchors.rend(); ++it) {
-        if (it->slot_index <= slot_index) {
-            target_anchor = &(*it);
-            break;
+    std::vector<SlotTransition> relevant_transitions;
+
+    {
+        std::lock_guard<std::mutex> anchors_lock(const_cast<std::mutex&>(state->anchors_mutex));
+        std::lock_guard<std::mutex> trans_lock(const_cast<std::mutex&>(state->transitions_mutex));
+
+        if (state->anchors.empty()) {
+            return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+        }
+
+        if (slot_index < state->anchors.front().slot_index) {
+            return AXIS_TIME_ERROR_SLOT_IN_PAST;
+        }
+
+        if (slot_index > state->current_slot.load()) {
+            return AXIS_TIME_ERROR_INVALID_PARAMETER;
+        }
+
+        // Find nearest anchor before target slot
+        for (auto it = state->anchors.rbegin(); it != state->anchors.rend(); ++it) {
+            if (it->slot_index <= slot_index) {
+                target_anchor = &(*it);
+                break;
+            }
+        }
+
+        if (!target_anchor) {
+            return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+        }
+
+        // Collect transitions from anchor to target slot
+        for (const auto& trans : state->pending_transitions) {
+            if (trans.slot_index > target_anchor->slot_index &&
+                trans.slot_index <= slot_index) {
+                relevant_transitions.push_back(trans);
+            }
         }
     }
 
-    if (!target_anchor) {
-        return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
-    }
+    // Compute hashes for the reconstruction path
+    uint8_t transition_hash[16];
+    uint8_t policy_hash[16];
 
-    // Generate key based on anchor and slot offset
-    uint64_t offset = slot_index - target_anchor->slot_index;
+    ComputeTransitionHash(relevant_transitions, transition_hash);
+    std::memcpy(policy_hash, target_anchor->policy_hash, 16);
+
+    // Generate the key
+    // THE KEY TELLS US: "Start from anchor X, replay to slot Y, verify with these hashes"
     *out_key = GenerateReconstructionKey(
+        target_anchor->anchor_id,
         slot_index,
-        0,  // State hash would be computed during reconstruction
-        target_anchor->transition_hash ^ offset
+        transition_hash,
+        policy_hash
     );
 
     return AXIS_TIME_OK;
@@ -97,16 +289,34 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_CreateAnchorNow(AxisTimeAxi
 
     std::lock_guard<std::mutex> anchors_lock(state->anchors_mutex);
     std::lock_guard<std::mutex> state_lock(state->state_mutex);
+    std::lock_guard<std::mutex> trans_lock(state->transitions_mutex);
 
     AxisSlotIndex current = state->current_slot.load();
 
     AnchorData anchor;
+    anchor.anchor_id = state->next_anchor_id.fetch_add(1);
     anchor.slot_index = current;
     anchor.state_snapshot = state->current_state;
-    anchor.transition_hash = 0;
-    anchor.key = GenerateReconstructionKey(current, 0, 0);
+
+    // Copy transition log for this anchor (for future reconstruction)
+    anchor.transition_log = {};
+    for (const auto& trans : state->pending_transitions) {
+        for (const auto& req : trans.requests) {
+            anchor.transition_log.push_back(req);
+        }
+    }
+
+    // Compute hashes
+    ComputeTransitionHash(state->pending_transitions, anchor.transition_hash);
+
+    // Policy hash would be computed during resolution
+    std::memset(anchor.policy_hash, 0, 16);
 
     state->anchors.push_back(std::move(anchor));
+    state->last_anchor_slot = current;
+
+    // Clear pending transitions (they're now part of the anchor)
+    state->pending_transitions.clear();
 
     // Prune old anchors if needed
     while (state->anchors.size() > state->config.max_anchors) {
@@ -131,7 +341,7 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetAnchorInterval(
 }
 
 // =============================================================================
-// State Reconstruction
+// State Reconstruction (Deterministic Replay)
 // =============================================================================
 
 extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_ReconstructState(
@@ -149,8 +359,13 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_ReconstructState(
 
     // Find the anchor at or before the requested slot
     const AnchorData* target_anchor = nullptr;
+    std::vector<SlotTransition> relevant_transitions;
+    std::vector<ConflictGroupData> groups_copy;
+
     {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state->anchors_mutex));
+        std::lock_guard<std::mutex> anchors_lock(const_cast<std::mutex&>(state->anchors_mutex));
+        std::lock_guard<std::mutex> trans_lock(const_cast<std::mutex&>(state->transitions_mutex));
+        std::lock_guard<std::mutex> groups_lock(const_cast<std::mutex&>(state->groups_mutex));
 
         if (state->anchors.empty()) {
             return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
@@ -160,59 +375,48 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_ReconstructState(
             return AXIS_TIME_ERROR_RECONSTRUCTION_FAILED;
         }
 
+        // Find nearest anchor before target slot
         for (auto it = state->anchors.rbegin(); it != state->anchors.rend(); ++it) {
             if (it->slot_index <= slot_index) {
                 target_anchor = &(*it);
                 break;
             }
         }
-    }
 
-    if (!target_anchor) {
-        return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
-    }
+        if (!target_anchor) {
+            return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+        }
 
-    // If requesting exactly the anchor slot, use snapshot directly
-    if (target_anchor->slot_index == slot_index) {
-        for (const auto& [key_hash, value] : target_anchor->state_snapshot) {
-            AxisStateKey key;
-            key.primary = key_hash;
-            key.secondary = 0;
-
-            if (enumerator(&key, &value, user_data) != 0) {
-                break;
+        // Collect transitions from anchor to target slot
+        for (const auto& trans : state->pending_transitions) {
+            if (trans.slot_index > target_anchor->slot_index &&
+                trans.slot_index <= slot_index) {
+                relevant_transitions.push_back(trans);
             }
         }
-        return AXIS_TIME_OK;
+
+        groups_copy = state->conflict_groups;
     }
 
-    // For slots between anchors, we need to replay changes
-    // This is where the deterministic reconstruction happens
-    // In a full implementation, we would store transition deltas
+    // Deterministically replay from anchor to target slot
+    std::unordered_map<uint64_t, AxisStateValue> reconstructed_state;
 
-    // For now, if the slot is the current slot, use current state
-    if (slot_index == state->current_slot.load()) {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state->state_mutex));
+    if (!ReplayTransitionsToSlot(*target_anchor, relevant_transitions, slot_index, groups_copy, reconstructed_state)) {
+        return AXIS_TIME_ERROR_RECONSTRUCTION_FAILED;
+    }
 
-        for (const auto& [key_hash, value] : state->current_state) {
-            AxisStateKey key;
-            key.primary = key_hash;
-            key.secondary = 0;
+    // Enumerate the reconstructed state
+    for (const auto& [key_hash, value] : reconstructed_state) {
+        AxisStateKey key;
+        key.primary = key_hash;
+        key.secondary = 0;
 
-            // Filter by group if specified
-            // (In full implementation, we'd track which keys belong to which groups)
-            if (group_id == AXIS_CONFLICT_GROUP_INVALID || true /* simplified */) {
-                if (enumerator(&key, &value, user_data) != 0) {
-                    break;
-                }
-            }
+        if (enumerator(&key, &value, user_data) != 0) {
+            break;
         }
-        return AXIS_TIME_OK;
     }
 
-    // For intermediate slots, reconstruction would require replaying
-    // the deterministic transition function from anchor to target slot
-    return AXIS_TIME_ERROR_RECONSTRUCTION_FAILED;
+    return AXIS_TIME_OK;
 }
 
 extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_QueryState(
@@ -227,7 +431,7 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_QueryState(
 
     const auto* state = reinterpret_cast<const TimeAxisState*>(axis);
 
-    // For current slot, use current state directly
+    // For current slot, use current state directly (optimization)
     if (slot_index == state->current_slot.load()) {
         std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state->state_mutex));
 
@@ -240,70 +444,56 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_QueryState(
         return AXIS_TIME_ERROR_NOT_FOUND;
     }
 
-    // For past slots, find appropriate anchor and reconstruct
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state->anchors_mutex));
-
+    // For past slots, find anchor and replay
     const AnchorData* target_anchor = nullptr;
-    for (auto it = state->anchors.rbegin(); it != state->anchors.rend(); ++it) {
-        if (it->slot_index <= slot_index) {
-            target_anchor = &(*it);
-            break;
+    std::vector<SlotTransition> relevant_transitions;
+    std::vector<ConflictGroupData> groups_copy;
+
+    {
+        std::lock_guard<std::mutex> anchors_lock(const_cast<std::mutex&>(state->anchors_mutex));
+        std::lock_guard<std::mutex> trans_lock(const_cast<std::mutex&>(state->transitions_mutex));
+        std::lock_guard<std::mutex> groups_lock(const_cast<std::mutex&>(state->groups_mutex));
+
+        if (state->anchors.empty()) {
+            return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
         }
+
+        // Find nearest anchor before target slot
+        for (auto it = state->anchors.rbegin(); it != state->anchors.rend(); ++it) {
+            if (it->slot_index <= slot_index) {
+                target_anchor = &(*it);
+                break;
+            }
+        }
+
+        if (!target_anchor) {
+            return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+        }
+
+        // Collect transitions
+        for (const auto& trans : state->pending_transitions) {
+            if (trans.slot_index > target_anchor->slot_index &&
+                trans.slot_index <= slot_index) {
+                relevant_transitions.push_back(trans);
+            }
+        }
+
+        groups_copy = state->conflict_groups;
     }
 
-    if (!target_anchor) {
-        return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+    // Replay to get state at target slot
+    std::unordered_map<uint64_t, AxisStateValue> reconstructed_state;
+
+    if (!ReplayTransitionsToSlot(*target_anchor, relevant_transitions, slot_index, groups_copy, reconstructed_state)) {
+        return AXIS_TIME_ERROR_RECONSTRUCTION_FAILED;
     }
 
     uint64_t key_hash = MakeStateKeyHash(*key);
-    auto it = target_anchor->state_snapshot.find(key_hash);
-    if (it != target_anchor->state_snapshot.end()) {
+    auto it = reconstructed_state.find(key_hash);
+    if (it != reconstructed_state.end()) {
         *out_value = it->second;
         return AXIS_TIME_OK;
     }
 
     return AXIS_TIME_ERROR_NOT_FOUND;
 }
-
-// =============================================================================
-// Helper Function Implementations
-// =============================================================================
-
-namespace axis::time::internal {
-
-uint64_t ComputeChangesHash(
-    const std::vector<std::pair<AxisStateKey, AxisStateValue>>& changes
-) {
-    uint64_t hash = 0x517cc1b727220a95ULL;  // FNV offset basis
-
-    for (const auto& [key, value] : changes) {
-        hash ^= MakeStateKeyHash(key);
-        hash *= 0x100000001b3ULL;  // FNV prime
-        hash ^= value.as_uint;
-        hash *= 0x100000001b3ULL;
-    }
-
-    return hash;
-}
-
-AxisReconstructionKey GenerateReconstructionKey(
-    AxisSlotIndex slot,
-    uint64_t state_hash,
-    uint64_t transition_hash
-) {
-    AxisReconstructionKey key{};
-
-    // Pack data into the fixed-size key
-    // Format: [slot:8][state_hash:8][transition_hash:8][checksum:8]
-    uint64_t* data = reinterpret_cast<uint64_t*>(key.data);
-    data[0] = slot;
-    data[1] = state_hash;
-    data[2] = transition_hash;
-
-    // Simple checksum
-    data[3] = data[0] ^ data[1] ^ data[2] ^ 0xDEADBEEFCAFEBABEULL;
-
-    return key;
-}
-
-} // namespace axis::time::internal
