@@ -4,4 +4,5 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="AXIS_core/AXIS_core.vcxproj" Id="d2882197-3a31-44a3-8527-7cfb3da71093" />
+  <Project Path="AXIS_time/AXIS_time.vcxproj" Id="02ac6e0e-54d4-4591-bb11-e9ee54f79f48" />
 </Solution>
