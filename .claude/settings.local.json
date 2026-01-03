@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(cmd.exe /c \"\"\"C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/Tools/VsDevCmd.bat\"\" && msbuild AXIS_time/AXIS_time.vcxproj /p:Configuration=Debug /p:Platform=x64 /verbosity:minimal 2>&1\")"
+    ]
+  }
+}
