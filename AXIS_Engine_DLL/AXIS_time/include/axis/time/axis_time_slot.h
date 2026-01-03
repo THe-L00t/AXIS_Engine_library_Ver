@@ -300,21 +300,6 @@ AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetAnchorInterval(
 // =============================================================================
 
 /**
- * @brief Callback for receiving reconstructed state
- *
- * @param key        State key
- * @param value      State value at the requested slot
- * @param user_data  User-provided context
- *
- * @return 0 to continue enumeration, non-zero to stop
- */
-typedef int (*AxisStateEnumerator)(
-    const AxisStateKey* key,
-    const AxisStateValue* value,
-    void* user_data
-);
-
-/**
  * @brief Reconstructs and enumerates state at a specific past slot
  *
  * This function:
@@ -407,6 +392,221 @@ AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetCommitCallback(
 AXIS_TIME_API size_t AxisTimeAxis_GetPendingRequestCount(
     const AxisTimeAxis* axis,
     AxisSlotIndex slot_index
+);
+
+// =============================================================================
+// Slot Termination Policy
+// =============================================================================
+//
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │  CRITICAL: TERMINATION POLICY SEMANTICS                                │
+// │                                                                         │
+// │  "A termination policy is part of the Time Axis definition,            │
+// │   not part of gameplay logic."                                         │
+// │                                                                         │
+// │  The termination policy is IMMUTABLE after Time Axis creation.         │
+// │                                                                         │
+// │  CORRECT USAGE:                                                         │
+// │    AxisTerminationConfig term = AxisTermination_DefaultConfig();       │
+// │    term.step_limit = 5000;                                             │
+// │    config.termination_config = &term;                                  │
+// │    AxisTimeAxis_Create(&config, &axis);  // Policy locked here         │
+// │                                                                         │
+// │  The setter functions below are DEPRECATED and will return             │
+// │  AXIS_TIME_ERROR_POLICY_LOCKED after Time Axis creation.               │
+// │                                                                         │
+// │  If you need different termination logic, create a NEW Time Axis.      │
+// └─────────────────────────────────────────────────────────────────────────┘
+//
+// =============================================================================
+
+/**
+ * @brief Sets the step limit termination condition
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * Slot ends when: elapsed_steps >= max_steps
+ *
+ * @param axis       The Time Axis
+ * @param max_steps  Maximum steps per slot (0 to disable)
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetTerminationByStepLimit(
+    AxisTimeAxis* axis,
+    uint32_t max_steps
+);
+
+/**
+ * @brief Sets the request drain termination condition
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetTerminationOnRequestDrain(
+    AxisTimeAxis* axis,
+    int enabled
+);
+
+/**
+ * @brief Sets the conflict group resolution termination condition
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetTerminationOnGroupResolution(
+    AxisTimeAxis* axis,
+    int enabled
+);
+
+/**
+ * @brief Sets the external signal termination condition
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetTerminationOnExternalSignal(
+    AxisTimeAxis* axis,
+    uint32_t required_flags_mask
+);
+
+/**
+ * @brief Sets the safety cap (hard upper bound)
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetTerminationSafetyCap(
+    AxisTimeAxis* axis,
+    uint32_t max_steps_cap
+);
+
+/**
+ * @brief Sets a custom termination callback
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetCustomTerminationCallback(
+    AxisTimeAxis* axis,
+    AxisSlotTerminationCallback callback,
+    void* user_data
+);
+
+/**
+ * @brief Sets the complete termination configuration
+ *
+ * @deprecated This function is DEPRECATED. Configure termination policy
+ *             at Time Axis creation via AxisTimeAxisConfig.termination_config.
+ *
+ * @return AXIS_TIME_ERROR_POLICY_LOCKED - Policy cannot be modified after creation
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetTerminationConfig(
+    AxisTimeAxis* axis,
+    const AxisTerminationConfig* config
+);
+
+/**
+ * @brief Gets the current termination configuration
+ *
+ * @param axis        The Time Axis
+ * @param out_config  Output: current configuration
+ *
+ * @return AXIS_TIME_OK on success
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_GetTerminationConfig(
+    const AxisTimeAxis* axis,
+    AxisTerminationConfig* out_config
+);
+
+/**
+ * @brief Sets an external signal flag
+ *
+ * @param axis  The Time Axis
+ * @param flag  Flag to set (OR'd with existing flags)
+ *
+ * @return AXIS_TIME_OK on success
+ *
+ * @note Thread-safe
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_SetExternalSignal(
+    AxisTimeAxis* axis,
+    uint32_t flag
+);
+
+/**
+ * @brief Clears an external signal flag
+ *
+ * @param axis  The Time Axis
+ * @param flag  Flag to clear
+ *
+ * @return AXIS_TIME_OK on success
+ *
+ * @note Thread-safe
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_ClearExternalSignal(
+    AxisTimeAxis* axis,
+    uint32_t flag
+);
+
+/**
+ * @brief Gets the current termination context
+ *
+ * @param axis         The Time Axis
+ * @param out_context  Output: current context
+ *
+ * @return AXIS_TIME_OK on success
+ */
+AXIS_TIME_API AxisTimeResult AxisTimeAxis_GetTerminationContext(
+    const AxisTimeAxis* axis,
+    AxisSlotTerminationContext* out_context
+);
+
+/**
+ * @brief Gets the reason for the last slot termination
+ *
+ * @param axis  The Time Axis
+ *
+ * @return The termination reason
+ */
+AXIS_TIME_API AxisTerminationReason AxisTimeAxis_GetLastTerminationReason(
+    const AxisTimeAxis* axis
+);
+
+/**
+ * @brief Gets the IMMUTABLE termination policy hash
+ *
+ * PHILOSOPHY:
+ * "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+ *
+ * This hash is computed ONCE at Time Axis creation and NEVER changes.
+ * It represents the "semantic fingerprint" of the Time Axis.
+ *
+ * Use cases:
+ * - Verify two Time Axes have the same termination semantics
+ * - Validate anchor compatibility during reconstruction
+ * - Debugging and logging
+ *
+ * @param axis  The Time Axis
+ *
+ * @return The 64-bit termination policy hash (0 if axis is NULL)
+ *
+ * @note This value is constant for the lifetime of the Time Axis
+ * @note Modifying termination settings after creation does NOT change this hash
+ */
+AXIS_TIME_API uint64_t AxisTimeAxis_GetTerminationPolicyHash(
+    const AxisTimeAxis* axis
 );
 
 #ifdef __cplusplus

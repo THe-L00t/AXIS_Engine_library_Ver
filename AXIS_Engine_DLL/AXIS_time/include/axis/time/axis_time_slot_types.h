@@ -133,6 +133,28 @@ typedef enum AxisTimeResult {
     AXIS_TIME_ERROR_RECONSTRUCTION_FAILED = 9,
     AXIS_TIME_ERROR_INVALID_POLICY = 10,
     AXIS_TIME_ERROR_THREAD_POOL_FAILED = 11,
+    AXIS_TIME_ERROR_NOT_FOUND = 12,
+    /**
+     * @brief Anchor's termination policy hash does not match the current Time Axis.
+     *
+     * PHILOSOPHY:
+     * "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+     *
+     * This error occurs when attempting to use an anchor created with a different
+     * termination policy. Anchors are INCOMPATIBLE across different policy semantics.
+     * If you need different termination logic, create a NEW Time Axis.
+     */
+    AXIS_TIME_ERROR_POLICY_MISMATCH = 13,
+    /**
+     * @brief Termination policy is locked and cannot be modified.
+     *
+     * PHILOSOPHY:
+     * "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+     *
+     * The termination policy is IMMUTABLE after Time Axis creation.
+     * Use AxisTimeAxisConfig.termination_config to set the policy at creation time.
+     */
+    AXIS_TIME_ERROR_POLICY_LOCKED = 14,
 } AxisTimeResult;
 
 // =============================================================================
@@ -250,6 +272,15 @@ typedef int (*AxisCustomPolicyFn)(
 
 /**
  * @brief Configuration for creating a Time Axis
+ *
+ * PHILOSOPHY:
+ * "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+ *
+ * The termination policy is set at creation and becomes IMMUTABLE for the lifetime
+ * of the Time Axis. If you need different termination logic, create a NEW Time Axis.
+ *
+ * All anchors in a Time Axis share the same termination policy hash.
+ * Anchors created with different policies are INCOMPATIBLE.
  */
 typedef struct AxisTimeAxisConfig {
     /** Number of worker threads for parallel resolution (0 = auto-detect) */
@@ -266,6 +297,19 @@ typedef struct AxisTimeAxisConfig {
 
     /** Initial capacity for conflict groups */
     uint32_t initial_conflict_group_capacity;
+
+    /**
+     * Termination policy configuration (IMMUTABLE after creation)
+     *
+     * If NULL, default termination config is used.
+     * Once the Time Axis is created, this policy cannot be changed.
+     * The policy hash is computed once at creation and used for
+     * anchor compatibility verification.
+     *
+     * @note Use AxisTermination_DefaultConfig() to get a default config,
+     *       then modify as needed before passing to AxisTimeAxis_Create().
+     */
+    const struct AxisTerminationConfig* termination_config;
 } AxisTimeAxisConfig;
 
 /**
@@ -302,6 +346,138 @@ typedef void (*AxisSlotCommitCallback)(
     size_t changes_count,
     void* user_data
 );
+
+/**
+ * @brief Callback for receiving reconstructed state
+ *
+ * @param key        State key
+ * @param value      State value at the requested slot
+ * @param user_data  User-provided context
+ *
+ * @return 0 to continue enumeration, non-zero to stop
+ */
+typedef int (*AxisStateEnumerator)(
+    const AxisStateKey* key,
+    const AxisStateValue* value,
+    void* user_data
+);
+
+// =============================================================================
+// Slot Termination Policy System
+// =============================================================================
+
+/**
+ * @brief Slot Termination Context (LOW COST, POD)
+ *
+ * PHILOSOPHY:
+ * "A time slot does not end because time passed.
+ *  It ends because the engine has decided there is nothing left — or must stop."
+ *
+ * This struct provides the minimal, cache-friendly context for termination decisions.
+ * Updated incrementally during slot execution.
+ *
+ * @note Must be trivially copyable
+ * @note No heap allocation
+ * @note Safe for deterministic evaluation
+ */
+typedef struct AxisSlotTerminationContext {
+    uint32_t elapsed_steps;      /** How many internal steps executed in this slot */
+    uint32_t pending_requests;   /** Unresolved requests remaining */
+    uint32_t resolved_groups;    /** Conflict groups that have been resolved */
+    uint32_t total_groups;       /** Total conflict groups in this slot */
+    uint32_t external_flags;     /** Bitmask for external signals (network sync, scene change, etc.) */
+} AxisSlotTerminationContext;
+
+/**
+ * @brief External signal flags for termination decisions
+ */
+typedef enum AxisExternalSignalFlag {
+    AXIS_SIGNAL_NONE            = 0,
+    AXIS_SIGNAL_NETWORK_SYNC    = (1 << 0),  /** Network frame synchronization */
+    AXIS_SIGNAL_SERVER_AUTHORITY = (1 << 1), /** Server authority signal */
+    AXIS_SIGNAL_SCENE_TRANSITION = (1 << 2), /** Scene/level transition */
+    AXIS_SIGNAL_PAUSE_REQUEST   = (1 << 3),  /** Pause requested */
+    AXIS_SIGNAL_FORCE_COMMIT    = (1 << 4),  /** Force immediate commit */
+    AXIS_SIGNAL_USER_DEFINED_1  = (1 << 16), /** User-defined signal 1 */
+    AXIS_SIGNAL_USER_DEFINED_2  = (1 << 17), /** User-defined signal 2 */
+    AXIS_SIGNAL_USER_DEFINED_3  = (1 << 18), /** User-defined signal 3 */
+    AXIS_SIGNAL_USER_DEFINED_4  = (1 << 19), /** User-defined signal 4 */
+} AxisExternalSignalFlag;
+
+/**
+ * @brief Termination reason (for debugging and logging)
+ */
+typedef enum AxisTerminationReason {
+    AXIS_TERMINATION_NONE = 0,            /** Slot has not terminated */
+    AXIS_TERMINATION_SAFETY_CAP,          /** Hard upper bound reached */
+    AXIS_TERMINATION_STEP_LIMIT,          /** Step count limit reached */
+    AXIS_TERMINATION_REQUEST_DRAIN,       /** All requests processed */
+    AXIS_TERMINATION_GROUP_RESOLUTION,    /** All conflict groups resolved */
+    AXIS_TERMINATION_EXTERNAL_SIGNAL,     /** External signal received */
+    AXIS_TERMINATION_CUSTOM_CALLBACK,     /** Custom callback decided to terminate */
+} AxisTerminationReason;
+
+/**
+ * @brief Custom slot termination callback (C ABI safe)
+ *
+ * Called LAST in the termination evaluation order.
+ * Allows developers to inject custom termination logic.
+ *
+ * @param context   Current termination context (read-only)
+ * @param user_data User-provided context
+ *
+ * @return Non-zero to terminate the slot, zero to continue
+ *
+ * RULES:
+ * - Callback must NOT mutate engine state
+ * - Callback result MUST be deterministic (same inputs → same output)
+ * - Callback presence affects policy_hash for replay verification
+ */
+typedef int (*AxisSlotTerminationCallback)(
+    const AxisSlotTerminationContext* context,
+    void* user_data
+);
+
+/**
+ * @brief Termination policy configuration
+ *
+ * Evaluation order (DETERMINISTIC CONTRACT):
+ * 1. Safety Cap (ALWAYS checked first, overrides all)
+ * 2. Step Limit
+ * 3. Request Drain
+ * 4. Group Resolution
+ * 5. External Signal
+ * 6. Custom Callback (if any)
+ */
+typedef struct AxisTerminationConfig {
+    /** Step limit (0 = disabled) */
+    uint32_t step_limit;
+
+    /** Safety cap - hard upper bound (0 = disabled, but NOT recommended) */
+    uint32_t safety_cap;
+
+    /** Terminate when all pending requests are processed */
+    int terminate_on_request_drain;
+
+    /** Terminate when all conflict groups are resolved */
+    int terminate_on_group_resolution;
+
+    /** Required external flags mask (0 = disabled) */
+    uint32_t required_external_flags;
+
+    /** Custom termination callback (NULL = disabled) */
+    AxisSlotTerminationCallback custom_callback;
+
+    /** User data for custom callback */
+    void* custom_callback_user_data;
+} AxisTerminationConfig;
+
+/**
+ * @brief Returns default termination configuration
+ *
+ * Default: Safety cap of 10000 steps, no other conditions
+ */
+AXIS_TIME_API AxisTerminationConfig AxisTermination_DefaultConfig(void);
 
 #ifdef __cplusplus
 }

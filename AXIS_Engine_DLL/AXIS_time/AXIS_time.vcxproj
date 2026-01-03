@@ -158,6 +158,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\slot\time_axis.cpp" />
+    <ClCompile Include="src\slot\termination.cpp" />
     <ClCompile Include="src\anchor\anchor.cpp" />
     <ClCompile Include="src\conflict\conflict_resolver.cpp" />
   </ItemGroup>

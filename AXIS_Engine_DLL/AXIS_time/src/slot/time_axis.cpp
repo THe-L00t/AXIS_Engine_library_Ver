@@ -27,6 +27,7 @@ extern "C" AXIS_TIME_API AxisTimeAxisConfig AxisTimeAxis_DefaultConfig(void) {
     config.anchor_interval = AXIS_DEFAULT_ANCHOR_INTERVAL;
     config.max_anchors = 64;
     config.initial_conflict_group_capacity = 32;
+    config.termination_config = nullptr;  // Uses default termination config
     return config;
 }
 
@@ -82,13 +83,36 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Create(
         return AXIS_TIME_ERROR_THREAD_POOL_FAILED;
     }
 
+    // Initialize termination policy FIRST - needed before creating genesis anchor
+    // CRITICAL: Policy is set at creation and NEVER changes after
+    // "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+    //
+    // The termination policy defines the semantic identity of this Time Axis.
+    // Anchors created with different policies are INCOMPATIBLE.
+    if (actual_config.termination_config) {
+        // Use provided termination config
+        state->termination_policy.config = *actual_config.termination_config;
+    } else {
+        // Use default termination config
+        state->termination_policy.config = AxisTermination_DefaultConfig();
+    }
+    state->termination_context = {};
+
+    // Compute termination policy hash ONCE - this is IMMUTABLE for the lifetime of this Time Axis
+    // This hash is the "semantic fingerprint" that defines this Time Axis's identity
+    // Anchors with different policy hashes are INCOMPATIBLE
+    // Modifying termination policy after this point has NO effect on the hash
+    state->termination_policy_hash = state->termination_policy.GetPolicyHash();
+
     // Create initial anchor at slot 0
     // This is the genesis anchor - all reconstruction starts from here or later anchors
     AnchorData initial_anchor{};
     initial_anchor.anchor_id = state->next_anchor_id.fetch_add(1);
     initial_anchor.slot_index = 0;
     std::memset(initial_anchor.transition_hash, 0, 16);
-    std::memset(initial_anchor.policy_hash, 0, 16);
+    std::memset(initial_anchor.resolution_hash, 0, 16);
+    // Store the axis's termination policy hash - this anchor belongs to THIS Time Axis
+    initial_anchor.termination_policy_hash = state->termination_policy_hash;
     state->anchors.push_back(std::move(initial_anchor));
 
     state->initialized = true;
@@ -126,6 +150,16 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
 
     AxisSlotIndex target_slot = state->current_slot.load() + 1;
 
+    // Initialize termination context for this slot
+    {
+        std::lock_guard<std::mutex> lock(state->termination_mutex);
+        state->termination_context.elapsed_steps = 0;
+        state->termination_context.pending_requests = 0;
+        state->termination_context.resolved_groups = 0;
+        state->termination_context.total_groups = 0;
+        state->termination_context.external_flags = state->external_flags.load();
+    }
+
     // Step 1: Collect requests for this slot
     std::vector<PendingRequest> slot_requests;
     {
@@ -147,10 +181,23 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         }
     }
 
+    // Update termination context with pending requests
+    {
+        std::lock_guard<std::mutex> lock(state->termination_mutex);
+        state->termination_context.pending_requests = static_cast<uint32_t>(slot_requests.size());
+    }
+
     // Step 2: Group requests by conflict group
     std::unordered_map<AxisConflictGroupId, std::vector<const PendingRequest*>> grouped_requests;
     for (const auto& req : slot_requests) {
         grouped_requests[req.desc.conflict_group].push_back(&req);
+    }
+
+    // Update termination context with group count
+    {
+        std::lock_guard<std::mutex> lock(state->termination_mutex);
+        state->termination_context.total_groups = static_cast<uint32_t>(grouped_requests.size());
+        state->termination_context.elapsed_steps = 1;  // Mark slot execution started
     }
 
     // Step 3: Resolve each conflict group (in parallel)
@@ -167,7 +214,7 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
     }
 
     for (const auto& [group_id, requests] : grouped_requests) {
-        state->worker_pool->Submit([&, group_id, &requests]() {
+        state->worker_pool->Submit([&, group_id]() {
             // Find group configuration
             ConflictGroupData group{};
             group.id = group_id;
@@ -269,7 +316,11 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
 
         // Compute hashes for determinism verification
         ComputeTransitionHash(state->pending_transitions, anchor.transition_hash);
-        ComputePolicyHash(resolution_results, anchor.policy_hash);
+        ComputePolicyHash(resolution_results, anchor.resolution_hash);
+
+        // Store the axis's IMMUTABLE termination policy hash
+        // This anchor inherits the Time Axis's semantic identity
+        anchor.termination_policy_hash = state->termination_policy_hash;
 
         state->anchors.push_back(std::move(anchor));
         state->last_anchor_slot = target_slot;

@@ -87,7 +87,12 @@ struct AnchorData {
 
     // Hash for verifying reconstruction correctness
     uint8_t transition_hash[16];  /** Hash of all transitions from prev anchor */
-    uint8_t policy_hash[16];      /** Hash of conflict resolution decisions */
+    uint8_t resolution_hash[16];  /** Hash of conflict resolution decisions */
+
+    // CRITICAL: Termination policy hash from the Time Axis at anchor creation
+    // This is the "semantic fingerprint" that must match for reconstruction
+    // If anchor's policy hash != axis's policy hash → INCOMPATIBLE
+    uint64_t termination_policy_hash{0};
 };
 
 /**
@@ -114,6 +119,62 @@ struct GroupResolutionResult {
     AxisConflictGroupId                     group_id;
     std::vector<std::pair<AxisStateKey, AxisStateValue>> resolved_changes;
     uint64_t                                change_hash;
+};
+
+// =============================================================================
+// Slot Termination Policy (Internal)
+// =============================================================================
+
+/**
+ * @brief Internal termination policy interface (C++ only, advanced)
+ *
+ * Used for engine-level extensions or experiments.
+ * NOT exposed in C ABI.
+ */
+class ISlotTerminationPolicy {
+public:
+    virtual ~ISlotTerminationPolicy() = default;
+
+    /**
+     * @brief Evaluates whether the slot should terminate
+     *
+     * @param ctx Current termination context
+     * @return true to terminate, false to continue
+     *
+     * @note Must be deterministic
+     * @note Must not modify engine state
+     */
+    virtual bool ShouldTerminate(const AxisSlotTerminationContext& ctx) const = 0;
+
+    /**
+     * @brief Gets a hash representing this policy for determinism verification
+     */
+    virtual uint64_t GetPolicyHash() const = 0;
+};
+
+/**
+ * @brief Built-in termination policy implementation
+ *
+ * Evaluation order (DETERMINISTIC CONTRACT):
+ * 1. Safety Cap (ALWAYS first, overrides all)
+ * 2. Step Limit
+ * 3. Request Drain
+ * 4. Group Resolution
+ * 5. External Signal
+ * 6. Custom Callback (if any)
+ */
+class BuiltinTerminationPolicy : public ISlotTerminationPolicy {
+public:
+    AxisTerminationConfig config;
+    AxisTerminationReason last_reason{AXIS_TERMINATION_NONE};
+
+    bool ShouldTerminate(const AxisSlotTerminationContext& ctx) const override;
+    uint64_t GetPolicyHash() const override;
+
+    /**
+     * @brief Evaluates and returns the specific termination reason
+     */
+    AxisTerminationReason Evaluate(const AxisSlotTerminationContext& ctx) const;
 };
 
 // =============================================================================
@@ -214,6 +275,24 @@ struct TimeAxisState {
     std::mutex callback_mutex;
     AxisSlotCommitCallback commit_callback{nullptr};
     void* callback_user_data{nullptr};
+
+    // Termination policy
+    // CRITICAL PHILOSOPHY:
+    // "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+    //
+    // - Policy hash is computed ONCE at creation and NEVER changes
+    // - This hash is used ONLY for determinism validation during reconstruction
+    // - Anchors created with different policies are INCOMPATIBLE
+    // - If you need different termination logic, create a NEW Time Axis
+    std::mutex termination_mutex;
+    BuiltinTerminationPolicy termination_policy;
+    AxisSlotTerminationContext termination_context{};
+    std::atomic<uint32_t> external_flags{0};
+    AxisTerminationReason last_termination_reason{AXIS_TERMINATION_NONE};
+
+    // IMMUTABLE after creation - computed once, never modified
+    // This is the "semantic fingerprint" of the Time Axis
+    uint64_t termination_policy_hash{0};
 
     // Statistics
     std::atomic<uint64_t> total_requests_processed{0};

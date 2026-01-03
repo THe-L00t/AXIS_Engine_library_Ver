@@ -252,6 +252,13 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_GetReconstructionKey(
             return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
         }
 
+        // CRITICAL: Verify anchor compatibility
+        // "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+        // Anchors with different policies are INCOMPATIBLE
+        if (target_anchor->termination_policy_hash != state->termination_policy_hash) {
+            return AXIS_TIME_ERROR_POLICY_MISMATCH;
+        }
+
         // Collect transitions from anchor to target slot
         for (const auto& trans : state->pending_transitions) {
             if (trans.slot_index > target_anchor->slot_index &&
@@ -263,10 +270,10 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_GetReconstructionKey(
 
     // Compute hashes for the reconstruction path
     uint8_t transition_hash[16];
-    uint8_t policy_hash[16];
+    uint8_t resolution_hash[16];
 
     ComputeTransitionHash(relevant_transitions, transition_hash);
-    std::memcpy(policy_hash, target_anchor->policy_hash, 16);
+    std::memcpy(resolution_hash, target_anchor->resolution_hash, 16);
 
     // Generate the key
     // THE KEY TELLS US: "Start from anchor X, replay to slot Y, verify with these hashes"
@@ -274,7 +281,7 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_GetReconstructionKey(
         target_anchor->anchor_id,
         slot_index,
         transition_hash,
-        policy_hash
+        resolution_hash
     );
 
     return AXIS_TIME_OK;
@@ -309,8 +316,12 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_CreateAnchorNow(AxisTimeAxi
     // Compute hashes
     ComputeTransitionHash(state->pending_transitions, anchor.transition_hash);
 
-    // Policy hash would be computed during resolution
-    std::memset(anchor.policy_hash, 0, 16);
+    // Resolution hash would be computed during resolution (not available here)
+    std::memset(anchor.resolution_hash, 0, 16);
+
+    // Store the axis's IMMUTABLE termination policy hash
+    // This anchor inherits the Time Axis's semantic identity
+    anchor.termination_policy_hash = state->termination_policy_hash;
 
     state->anchors.push_back(std::move(anchor));
     state->last_anchor_slot = current;
@@ -385,6 +396,13 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_ReconstructState(
 
         if (!target_anchor) {
             return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+        }
+
+        // CRITICAL: Verify anchor compatibility
+        // "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+        // Anchors with different policies are INCOMPATIBLE
+        if (target_anchor->termination_policy_hash != state->termination_policy_hash) {
+            return AXIS_TIME_ERROR_POLICY_MISMATCH;
         }
 
         // Collect transitions from anchor to target slot
@@ -468,6 +486,13 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_QueryState(
 
         if (!target_anchor) {
             return AXIS_TIME_ERROR_ANCHOR_NOT_FOUND;
+        }
+
+        // CRITICAL: Verify anchor compatibility
+        // "A termination policy is part of the Time Axis definition, not part of gameplay logic."
+        // Anchors with different policies are INCOMPATIBLE
+        if (target_anchor->termination_policy_hash != state->termination_policy_hash) {
+            return AXIS_TIME_ERROR_POLICY_MISMATCH;
         }
 
         // Collect transitions
