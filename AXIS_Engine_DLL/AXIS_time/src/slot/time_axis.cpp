@@ -150,16 +150,6 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
 
     AxisSlotIndex target_slot = state->current_slot.load() + 1;
 
-    // Initialize termination context for this slot
-    {
-        std::lock_guard<std::mutex> lock(state->termination_mutex);
-        state->termination_context.elapsed_steps = 0;
-        state->termination_context.pending_requests = 0;
-        state->termination_context.resolved_groups = 0;
-        state->termination_context.total_groups = 0;
-        state->termination_context.external_flags = state->external_flags.load();
-    }
-
     // Step 1: Collect requests for this slot
     std::vector<PendingRequest> slot_requests;
     {
@@ -181,23 +171,10 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         }
     }
 
-    // Update termination context with pending requests
-    {
-        std::lock_guard<std::mutex> lock(state->termination_mutex);
-        state->termination_context.pending_requests = static_cast<uint32_t>(slot_requests.size());
-    }
-
     // Step 2: Group requests by conflict group
     std::unordered_map<AxisConflictGroupId, std::vector<const PendingRequest*>> grouped_requests;
     for (const auto& req : slot_requests) {
         grouped_requests[req.desc.conflict_group].push_back(&req);
-    }
-
-    // Update termination context with group count
-    {
-        std::lock_guard<std::mutex> lock(state->termination_mutex);
-        state->termination_context.total_groups = static_cast<uint32_t>(grouped_requests.size());
-        state->termination_context.elapsed_steps = 1;  // Mark slot execution started
     }
 
     // Step 3: Resolve each conflict group (in parallel)
@@ -343,6 +320,32 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         if (state->commit_callback) {
             state->commit_callback(target_slot, total_changes, state->callback_user_data);
         }
+    }
+
+    // Step 10: Update termination context and evaluate termination policy
+    // CRITICAL: This happens AFTER the tick completes to determine if this was a terminating tick
+    {
+        std::lock_guard<std::mutex> lock(state->termination_mutex);
+
+        // Increment elapsed steps (total ticks executed)
+        state->termination_context.elapsed_steps++;
+
+        // Update remaining pending requests count
+        {
+            std::lock_guard<std::mutex> req_lock(state->requests_mutex);
+            state->termination_context.pending_requests = static_cast<uint32_t>(state->pending_requests.size());
+        }
+
+        // Update group resolution stats
+        state->termination_context.resolved_groups = static_cast<uint32_t>(grouped_requests.size());
+        state->termination_context.total_groups = static_cast<uint32_t>(grouped_requests.size());
+
+        // Update external flags
+        state->termination_context.external_flags = state->external_flags.load();
+
+        // Evaluate termination policy
+        AxisTerminationReason reason = state->termination_policy.Evaluate(state->termination_context);
+        state->last_termination_reason = reason;
     }
 
     return AXIS_TIME_OK;
