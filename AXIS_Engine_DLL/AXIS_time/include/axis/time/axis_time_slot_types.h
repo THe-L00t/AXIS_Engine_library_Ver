@@ -155,6 +155,19 @@ typedef enum AxisTimeResult {
      * Use AxisTimeAxisConfig.termination_config to set the policy at creation time.
      */
     AXIS_TIME_ERROR_POLICY_LOCKED = 14,
+    /**
+     * @brief Time Axis has terminated and cannot be ticked further.
+     *
+     * PHILOSOPHY:
+     * "Once time decides to stop, it cannot be restarted.
+     *  A terminated axis is semantically complete."
+     *
+     * This error occurs when attempting to Tick() an axis that has already
+     * reached a termination condition. The axis lifecycle has transitioned to TERMINATED.
+     *
+     * To continue execution, create a NEW Time Axis.
+     */
+    AXIS_TIME_ERROR_TERMINATED = 15,
 } AxisTimeResult;
 
 // =============================================================================
@@ -366,6 +379,42 @@ typedef int (*AxisStateEnumerator)(
 // Slot Termination Policy System
 // =============================================================================
 
+// =============================================================================
+// Causality Axis Extension Point (FORWARD COMPATIBILITY)
+// =============================================================================
+
+/**
+ * @brief Causality Summary - Abstract causal dependency metrics
+ *
+ * PHILOSOPHY:
+ * "Time decides when the world progresses.
+ *  Causality decides why the world changes.
+ *  Termination decides whether time itself is allowed to continue."
+ *
+ * This struct represents a FUTURE extension point for a Causality Axis
+ * that tracks causal dependencies and state evolution.
+ *
+ * CRITICAL RULES:
+ * - Termination policy MUST NOT depend on concrete state data
+ * - Only meta-observations (counts, flags, summaries) are permitted
+ * - This struct is UNUSED in current implementation
+ * - Reserved for future Causality / Data Axis integration
+ *
+ * @note NOT IMPLEMENTED YET - Placeholder only
+ * @note Will NOT affect policy hashing until actually used
+ * @note Ensures ABI stability for future causality features
+ */
+typedef struct AxisCausalitySummary {
+    /** Number of causal events processed (future: state mutations, effects, etc.) */
+    uint64_t causal_event_count;
+
+    /** Number of unresolved causal dependencies (future: pending effects, deferred actions) */
+    uint64_t unresolved_dependencies;
+
+    /** Number of committed state mutations (future: finalized state changes) */
+    uint64_t committed_mutations;
+} AxisCausalitySummary;
+
 /**
  * @brief Slot Termination Context (LOW COST, POD)
  *
@@ -376,16 +425,58 @@ typedef int (*AxisStateEnumerator)(
  * This struct provides the minimal, cache-friendly context for termination decisions.
  * Updated incrementally during slot execution.
  *
+ * SEMANTIC CONTRACT (IMMUTABLE):
+ * These semantics MUST NOT change without breaking compatibility.
+ *
+ *   elapsed_steps     : Cumulative, monotonic, increments once per completed Tick
+ *                       Resets to 0 only on Time Axis creation
+ *                       Never decreases
+ *
+ *   pending_requests  : Snapshot of ALL pending requests at end of Tick
+ *                       Count of requests still in queue (not yet processed)
+ *                       Does NOT include requests processed in current tick
+ *
+ *   resolved_groups   : Number of groups SUCCESSFULLY resolved in THIS Tick only
+ *                       Only counts groups that completed resolution and committed results
+ *                       Does NOT count groups that failed or deferred
+ *
+ *   total_groups      : Number of conflict groups observed in THIS Tick
+ *                       Includes all groups that had requests, regardless of resolution status
+ *                       May differ from resolved_groups if some groups fail
+ *
+ *   external_flags    : Snapshot of external runtime signals at evaluation time
+ *                       Bitmask of AxisExternalSignalFlag values
+ *                       Updated atomically before termination evaluation
+ *
+ *   causality_summary : Optional causality metrics (FUTURE - currently NULL)
+ *                       Reserved for future Causality Axis integration
+ *                       Does NOT affect current termination logic
+ *
  * @note Must be trivially copyable
  * @note No heap allocation
  * @note Safe for deterministic evaluation
+ * @note Termination policy belongs to Time Axis definition, NOT gameplay logic
  */
 typedef struct AxisSlotTerminationContext {
-    uint32_t elapsed_steps;      /** How many internal steps executed in this slot */
-    uint32_t pending_requests;   /** Unresolved requests remaining */
-    uint32_t resolved_groups;    /** Conflict groups that have been resolved */
-    uint32_t total_groups;       /** Total conflict groups in this slot */
-    uint32_t external_flags;     /** Bitmask for external signals (network sync, scene change, etc.) */
+    uint32_t elapsed_steps;      /** Cumulative ticks executed (monotonic, never resets) */
+    uint32_t pending_requests;   /** Snapshot of remaining queue size */
+    uint32_t resolved_groups;    /** Groups that completed resolution THIS tick */
+    uint32_t total_groups;       /** Groups observed THIS tick */
+    uint32_t external_flags;     /** Runtime signal bitmask */
+
+    /**
+     * @brief Optional causality metrics (FUTURE EXTENSION)
+     *
+     * Currently ALWAYS NULL. Reserved for future Causality Axis.
+     * Does NOT participate in termination decisions yet.
+     * Does NOT affect policy hashing.
+     *
+     * Future usage:
+     *   Termination may consider abstract causality metrics
+     *   e.g., "terminate when all causal dependencies resolved"
+     *   BUT NEVER direct inspection of state data
+     */
+    const AxisCausalitySummary* causality_summary;
 } AxisSlotTerminationContext;
 
 /**

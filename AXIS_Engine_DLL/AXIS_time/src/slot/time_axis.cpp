@@ -148,6 +148,13 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         return AXIS_TIME_ERROR_NOT_INITIALIZED;
     }
 
+    // CRITICAL LIFECYCLE CHECK
+    // "Once time decides to stop, it cannot be restarted."
+    // If axis has terminated, reject all further ticks deterministically
+    if (state->lifecycle.load() == AxisLifecycle::TERMINATED) {
+        return AXIS_TIME_ERROR_TERMINATED;
+    }
+
     AxisSlotIndex target_slot = state->current_slot.load() + 1;
 
     // Step 1: Collect requests for this slot
@@ -178,10 +185,24 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
     }
 
     // Step 3: Resolve each conflict group (in parallel)
+    //
+    // SEMANTIC DISTINCTION (CRITICAL):
+    //   total_groups = number of groups OBSERVED (all groups with requests)
+    //   resolved_groups = number of groups that COMPLETED SUCCESSFULLY
+    //
+    // These may differ when:
+    //   - Some groups fail resolution
+    //   - Some groups defer processing
+    //   - Resolution errors occur
+    //
+    // This distinction enables terminate_on_group_resolution to have real meaning.
+    uint32_t total_groups = static_cast<uint32_t>(grouped_requests.size());
+
     std::vector<GroupResolutionResult> resolution_results;
     resolution_results.resize(grouped_requests.size());
 
     std::atomic<size_t> result_index{0};
+    std::atomic<uint32_t> resolved_group_count{0};  // Track successful resolutions
     std::atomic<bool> resolution_error{false};
 
     std::vector<ConflictGroupData> groups_copy;
@@ -211,7 +232,10 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
                 return;
             }
 
+            // Group resolved successfully - increment both counters
             size_t idx = result_index.fetch_add(1);
+            resolved_group_count.fetch_add(1);  // Only incremented on success
+
             if (idx < resolution_results.size()) {
                 resolution_results[idx] = std::move(result);
             }
@@ -220,9 +244,13 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
 
     state->worker_pool->WaitAll();
 
+    // Store the final resolved count (may be less than total if some groups failed)
+    uint32_t resolved_groups = resolved_group_count.load();
+
     if (resolution_error.load()) {
-        // Resolution failed, but we still advance time
+        // Resolution failed for some groups, but we still advance time
         // This prevents the system from stalling
+        // resolved_groups will be < total_groups, reflecting the partial failure
     }
 
     // Step 4: Commit results in deterministic order (sorted by group ID)
@@ -346,6 +374,67 @@ extern "C" AXIS_TIME_API AxisTimeResult AxisTimeAxis_Tick(AxisTimeAxis* axis) {
         // Evaluate termination policy
         AxisTerminationReason reason = state->termination_policy.Evaluate(state->termination_context);
         state->last_termination_reason = reason;
+    }
+
+    // Step 10: Update termination context and evaluate termination policy
+    //
+    // CRITICAL PHILOSOPHY:
+    // "Time decides when the world progresses.
+    //  Causality decides why the world changes.
+    //  Termination decides whether time itself is allowed to continue."
+    //
+    // WHY THIS HAPPENS AFTER TICK COMPLETES:
+    // - Termination policy is NOT gameplay logic
+    // - It observes meta-state (counts, flags, summaries), NEVER concrete state data
+    // - Evaluation determines if THIS tick was the final tick
+    // - Once terminated, lifecycle transitions to TERMINATED (irreversible)
+    //
+    // SEMANTIC CONTRACT ENFORCEMENT:
+    // - elapsed_steps: cumulative, monotonic (incremented here)
+    // - pending_requests: snapshot of remaining queue
+    // - resolved_groups: SUCCESSFUL resolutions only (may be < total_groups)
+    // - total_groups: all groups observed this tick
+    // - external_flags: runtime signals
+    // - causality_summary: FUTURE extension (currently NULL)
+    {
+        std::lock_guard<std::mutex> lock(state->termination_mutex);
+
+        // Increment elapsed steps (cumulative tick count, monotonic, never resets)
+        state->termination_context.elapsed_steps++;
+
+        // Update remaining pending requests count (snapshot of queue size)
+        {
+            std::lock_guard<std::mutex> req_lock(state->requests_mutex);
+            state->termination_context.pending_requests = static_cast<uint32_t>(state->pending_requests.size());
+        }
+
+        // Update group resolution stats
+        // CRITICAL: resolved_groups may be < total_groups if some groups failed
+        // This distinction gives terminate_on_group_resolution real semantic meaning
+        state->termination_context.resolved_groups = resolved_groups;
+        state->termination_context.total_groups = total_groups;
+
+        // Update external flags (runtime signals)
+        state->termination_context.external_flags = state->external_flags.load();
+
+        // Causality summary (FUTURE EXTENSION - currently NULL)
+        // Reserved for future Causality / Data Axis integration
+        // Does NOT affect termination policy yet
+        state->termination_context.causality_summary = nullptr;
+
+        // Evaluate termination policy
+        // PHILOSOPHY: "Termination policy is part of Time Axis definition, not gameplay logic"
+        // Policy was set at creation and is IMMUTABLE
+        AxisTerminationReason reason = state->termination_policy.Evaluate(state->termination_context);
+        state->last_termination_reason = reason;
+
+        // CRITICAL LIFECYCLE TRANSITION
+        // "Once time decides to stop, it cannot be restarted."
+        // If termination condition met, transition to TERMINATED state
+        // All future Tick() calls will return AXIS_TIME_ERROR_TERMINATED
+        if (reason != AXIS_TERMINATION_NONE) {
+            state->lifecycle.store(AxisLifecycle::TERMINATED);
+        }
     }
 
     return AXIS_TIME_OK;

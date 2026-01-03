@@ -28,6 +28,38 @@
 namespace axis::time::internal {
 
 // =============================================================================
+// Axis Lifecycle State
+// =============================================================================
+
+/**
+ * @brief Time Axis lifecycle state
+ *
+ * PHILOSOPHY:
+ * "Once time decides to stop, it cannot be restarted.
+ *  A terminated axis is semantically complete."
+ *
+ * Lifecycle Transitions:
+ *   ACTIVE → TERMINATED  (when termination condition met)
+ *   TERMINATED → NEVER   (no reverse transition exists)
+ *
+ * CRITICAL INVARIANTS:
+ * - ACTIVE: Tick() is allowed and will execute normally
+ * - TERMINATED: Tick() MUST return AXIS_TIME_ERROR_TERMINATED
+ * - Once TERMINATED, the axis is immutable and semantically frozen
+ * - To continue execution, create a NEW Time Axis
+ */
+enum class AxisLifecycle {
+    /** Axis is active and can be ticked */
+    ACTIVE,
+
+    /**
+     * Axis has terminated and cannot be ticked further
+     * Transition occurs when termination_policy.Evaluate() returns non-NONE
+     */
+    TERMINATED
+};
+
+// =============================================================================
 // Internal Request Storage
 // =============================================================================
 
@@ -293,6 +325,14 @@ struct TimeAxisState {
     // IMMUTABLE after creation - computed once, never modified
     // This is the "semantic fingerprint" of the Time Axis
     uint64_t termination_policy_hash{0};
+
+    // Lifecycle state (CRITICAL INVARIANT)
+    // PHILOSOPHY: "Once time decides to stop, it cannot be restarted."
+    //
+    // Transition: ACTIVE → TERMINATED (when termination condition met)
+    // Once TERMINATED, Tick() MUST return AXIS_TIME_ERROR_TERMINATED
+    // No reverse transition exists - create NEW Time Axis to continue
+    std::atomic<AxisLifecycle> lifecycle{AxisLifecycle::ACTIVE};
 
     // Statistics
     std::atomic<uint64_t> total_requests_processed{0};
